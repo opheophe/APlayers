@@ -185,3 +185,4 @@ cython_debug/
 Logs/
 Matcher.json
 Matcher.old.json
+Settings.ini
