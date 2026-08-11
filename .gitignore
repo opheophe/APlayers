@@ -183,3 +183,5 @@ cython_debug/
 # App output
 *.csv
 Logs/
+Matcher.json
+Matcher.old.json

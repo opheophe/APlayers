@@ -1,6 +1,8 @@
 import re
 import os
+import sys
 import csv
+import json
 import time
 import glob
 import requests
@@ -13,17 +15,36 @@ HEADERS = {
 }
 
 DELAY_MS = 2000
-MAX_MATCHES = 999999
 OUTPUT_DIR = "."
 LOG_DIR = "Logs"
 MAX_FILES = 10
 MAX_LOGS = 10
+MATCHER_FILE = "Matcher.json"
 
 log_handle = None
 
+os.system("")
+C = {
+    "R": "\033[91m",
+    "G": "\033[92m",
+    "Y": "\033[93m",
+    "B": "\033[94m",
+    "M": "\033[95m",
+    "C": "\033[96m",
+    "W": "\033[97m",
+    "BR": "\033[1;91m",
+    "BG": "\033[1;92m",
+    "BY": "\033[1;93m",
+    "BB": "\033[1;94m",
+    "BC": "\033[1;96m",
+    "BW": "\033[1;97m",
+    "X": "\033[0m",
+}
 
-def log(msg):
-    tqdm.write(msg)
+
+def log(msg, color=None):
+    text = f"{C.get(color, '')}{msg}{C['X']}" if color and sys.stdout.isatty() else msg
+    tqdm.write(text)
     if log_handle:
         log_handle.write(msg + "\n")
         log_handle.flush()
@@ -34,21 +55,19 @@ def fetch(url, timeout=30, retries=10):
         try:
             if attempt > 0:
                 wait = 2 ** attempt
-                log(f"  Retry {attempt} after {wait}s...")
+                log(f"  Retry {attempt} after {wait}s...", "Y")
                 time.sleep(wait)
             else:
                 time.sleep(DELAY_MS / 1000)
             resp = requests.get(url, headers=HEADERS, timeout=timeout)
             if resp.status_code in (429, 503):
-                log(f"  Server returned {resp.status_code}, retrying...")
+                log(f"  Server returned {resp.status_code}, retrying...", "Y")
                 time.sleep(5 * (attempt + 1))
                 continue
             return resp
         except requests.exceptions.RequestException as e:
-            log(f"  Request failed (attempt {attempt + 1}/{retries}): {e}")
+            log(f"  Request failed (attempt {attempt + 1}/{retries}): {e}", "Y")
     return None
-    return requests.Response()
-
 
 
 def load_leagues(path="Ligor.txt"):
@@ -79,7 +98,7 @@ def extract_result_links(name, url):
             if a and "spielbericht" in a["href"]:
                 links.append("https://www.transfermarkt.com" + a["href"])
 
-    log(f"[{name}] {len(links)} matches found")
+    log(f"[{name}] {len(links)} matches found", "B")
     return links
 
 
@@ -88,16 +107,15 @@ def parse_match(country, match_url):
     log(f"  Fetching lineup: {lineup_url}")
     resp = fetch(lineup_url)
     if resp is None or resp.status_code != 200:
-        log(f"  Failed after all retries: {match_url}")
-        answer = input("  Skip this match? (y/n): ").strip().lower()
-        if answer == "n":
-            log("  Aborting run.")
-            raise SystemExit(1)
-        return []
+        log(f"  FAILED after all retries: {match_url}", "BR")
+        return [], None
 
     soup = BeautifulSoup(resp.text, "html.parser")
 
     box = soup.select_one(".box.sb-spielbericht-head")
+    if not box:
+        return [], None
+
     liga_tag = box.select_one(".direct-headline__header a")
     liga = liga_tag.get_text(strip=True) if liga_tag else "?"
 
@@ -129,6 +147,16 @@ def parse_match(country, match_url):
 
     gast = box.select_one(".sb-gast a.sb-vereinslink")
     gast_name = gast.get_text(strip=True) if gast else "?"
+
+    meta = {
+        "liga": liga,
+        "home": heim_name,
+        "away": gast_name,
+        "matchday": matchday,
+        "date": datum,
+        "time": zeit,
+        "result": ergebnis_text,
+    }
 
     rows = []
     team_names = [heim_name, gast_name]
@@ -162,7 +190,7 @@ def parse_match(country, match_url):
                     [country, liga, matchday, team, datum, zeit, ergebnis_text, section, number, name, role, salary, age, nationality]
                 )
 
-    return rows
+    return rows, meta
 
 
 def parse_player_row(row):
@@ -239,64 +267,179 @@ def rotate_files(pattern, max_count):
         log(f"  Removed old file: {oldest}")
 
 
+def process_pending_matches(matcher_data, writer, csv_file):
+    pending = [m for m in matcher_data["matches"] if m["status"] == "pending"]
+    if not pending:
+        return 0
+
+    success = 0
+    for match in tqdm(pending, desc="Processing matches", unit="match"):
+        country = match["country"]
+        url = match["url"]
+
+        try:
+            rows, meta = parse_match(country, url)
+        except Exception as e:
+            log(f"  Skipped {url}: {e}", "Y")
+            continue
+
+        if meta is None:
+            continue
+
+        if rows:
+            match["status"] = "success"
+            match.update(meta)
+            writer.writerows(rows)
+            csv_file.flush()
+            success += 1
+        else:
+            match["status"] = "no_data"
+            match.update(meta)
+
+        save_matcher(matcher_data)
+
+    return success
+
+
+def load_matcher():
+    if not os.path.exists(MATCHER_FILE):
+        now = datetime.now()
+        return {"date": now.strftime("%Y-%m-%d"), "matches": []}
+    with open(MATCHER_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save_matcher(data):
+    with open(MATCHER_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+
+def format_duration(sec):
+    m, s = divmod(int(sec), 60)
+    h, m = divmod(m, 60)
+    if h:
+        return f"{h}h {m}m {s}s"
+    elif m:
+        return f"{m}m {s}s"
+    return f"{s}s"
+
+
 def main():
     global log_handle
 
-    now = datetime.now()
-    timestamp = now.strftime("%Y%m%d%H%M")
-    csv_path = os.path.join(OUTPUT_DIR, f"{timestamp}.csv")
+    t_start = datetime.now()
+    now = t_start
+    date_str = now.strftime("%Y-%m-%d")
+    csv_path = os.path.join(OUTPUT_DIR, f"Output {date_str}.csv")
 
     os.makedirs(LOG_DIR, exist_ok=True)
-    log_date = now.strftime("%Y-%m-%d")
-    log_path = os.path.join(LOG_DIR, f"{log_date}.log")
-
+    log_path = os.path.join(LOG_DIR, f"{date_str}.log")
     log_handle = open(log_path, "a", encoding="utf-8")
 
-    log(f"=== Run started at {now.strftime('%Y-%m-%d %H:%M:%S')} ===")
+    log(f"=== Run started at {now.strftime('%Y-%m-%d %H:%M:%S')} ===", "C")
 
-    rotate_files(os.path.join(OUTPUT_DIR, "*.csv"), MAX_FILES)
+    rotate_files(os.path.join(OUTPUT_DIR, "Output *.csv"), MAX_FILES)
     rotate_files(os.path.join(LOG_DIR, "*.log"), MAX_LOGS)
+
+    # --- Phase 0: Matcher.json setup ---
+    if os.path.exists(MATCHER_FILE):
+        log(f"{MATCHER_FILE} already exists.", "Y")
+        answer = input(f"{C['BY']}[A]ppend — keep existing + add new\n[N]ew    — archive old, start fresh\nChoice: {C['X']}").strip().lower()
+        if answer == "n":
+            bak = "Matcher.old.json"
+            os.replace(MATCHER_FILE, bak)
+            log(f"  Archived to {bak}")
+            matcher_data = {"date": date_str, "matches": []}
+        else:
+            matcher_data = load_matcher()
+            log("  Appending to existing file.")
+    else:
+        matcher_data = {"date": date_str, "matches": []}
 
     leagues = load_leagues()
     log(f"Loaded {len(leagues)} league(s)")
 
-    all_matches = []
+    existing_urls = {m["url"] for m in matcher_data["matches"]}
+    new_matches = []
     for country, url in tqdm(leagues, desc="Fetching fixtures", unit="league"):
         match_urls = extract_result_links(country, url)
         for m in match_urls:
-            all_matches.append((country, m))
+            if m not in existing_urls:
+                matcher_data["matches"].append({"country": country, "url": m, "status": "pending"})
+                new_matches.append((country, m))
 
-    total = len(all_matches)
-    all_matches = all_matches[:MAX_MATCHES]
+    save_matcher(matcher_data)
+    total_pending = sum(1 for m in matcher_data["matches"] if m["status"] == "pending")
 
-    log(f"Total matches to process: {len(all_matches)}")
+    log(f"{len(new_matches)} new matches added.")
+    log(f"Total in queue: {total_pending} pending, {len(matcher_data['matches']) - total_pending} already done.", "C")
+
+    if total_pending == 0:
+        log("Nothing to do. Exiting.", "BG")
+        log_handle.close()
+        return
+
+    # --- CSV setup ---
+    csv_mode = "w"
+    if os.path.exists(csv_path):
+        log(f"'{csv_path}' already exists.", "Y")
+        answer = input(f"{C['BY']}[O]verwrite  [A]ppend\nChoice: {C['X']}").strip().lower()
+        if answer == "a":
+            csv_mode = "a"
+        else:
+            csv_mode = "w"
 
     header = ["country", "liga", "matchday", "team", "date", "time", "result", "section", "number", "name", "role", "salary", "age", "nationality"]
 
-    success = 0
-    fail = 0
-
-    with open(csv_path, "w", encoding="utf-8", newline="") as csv_file:
+    with open(csv_path, csv_mode, encoding="utf-8", newline="") as csv_file:
         writer = csv.writer(csv_file)
-        writer.writerow(header)
+        if csv_mode == "w":
+            writer.writerow(header)
 
-        for country, match_url in tqdm(all_matches, desc="Processing matches", unit="match"):
-            try:
-                lines = parse_match(country, match_url)
-            except SystemExit:
-                raise
-            except Exception as e:
-                log(f"  Skipped {match_url}: {e}")
-                lines = []
-            if lines:
-                success += 1
-            else:
-                fail += 1
-            writer.writerows(lines)
-            csv_file.flush()
+        # --- Phase 1: process all pending ---
+        log("--- Phase 1: processing pending matches ---", "C")
+        succeeded = process_pending_matches(matcher_data, writer, csv_file)
 
-    log(f"Done. {success} fetched, {fail} failed (of {len(all_matches)}).")
+        pending_after = sum(1 for m in matcher_data["matches"] if m["status"] == "pending")
+        log(f"Phase 1 done. {succeeded} succeeded, {pending_after} still pending.", "BG" if pending_after == 0 else "Y")
+
+        # --- Phase 2: auto-rerun once ---
+        if pending_after > 0:
+            log(f"\n--- Phase 2: auto-rerun {pending_after} pending ---", "C")
+            succeeded2 = process_pending_matches(matcher_data, writer, csv_file)
+
+            pending_after2 = sum(1 for m in matcher_data["matches"] if m["status"] == "pending")
+            log(f"Phase 2 done. {succeeded2} recovered, {pending_after2} still pending.", "BG" if pending_after2 == 0 else "Y")
+            pending_after = pending_after2
+
+        # --- Phase 3: user-prompted reruns ---
+        while pending_after > 0:
+            pending_list = [m for m in matcher_data["matches"] if m["status"] == "pending"]
+            log(f"\n{pending_after} match(es) still failed:", "BR")
+            for m in pending_list:
+                log(f"  [{m['country']}] {m['url']}")
+
+            answer = input(f"{C['BR']}Rerun these {pending_after} matches? (y/n): {C['X']}").strip().lower()
+            if answer != "y":
+                log("Skipping rerun.", "Y")
+                break
+
+            log("Rerunning...", "C")
+            succeeded3 = process_pending_matches(matcher_data, writer, csv_file)
+            pending_after = sum(1 for m in matcher_data["matches"] if m["status"] == "pending")
+            log(f"{succeeded3} recovered, {pending_after} still pending.")
+
+    # --- Summary ---
+    total_success = sum(1 for m in matcher_data["matches"] if m["status"] == "success")
+    total_pending = sum(1 for m in matcher_data["matches"] if m["status"] == "pending")
+    total_no_data = sum(1 for m in matcher_data["matches"] if m["status"] == "no_data")
+    total = len(matcher_data["matches"])
+
+    log(f"\nFinal: {total_success} success, {total_no_data} no-data, {total_pending} failed (of {total}).", "BG" if total_pending == 0 else "Y")
     log(f"Output: {csv_path}")
+    log(f"Matcher: {MATCHER_FILE}")
+    log(f"Total time: {format_duration((datetime.now() - t_start).total_seconds())}", "M")
+
     log_handle.close()
 
 

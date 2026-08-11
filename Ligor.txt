@@ -1,2 +1,21 @@
-Bosnia,https://www.transfermarkt.com/toplyga/gesamtspielplan/wettbewerb/BOS1/saison_id/2026
-Denmark,https://www.transfermarkt.com/toplyga/gesamtspielplan/wettbewerb/DK1/saison_id/2026
+Estonia,https://www.transfermarkt.com/toplyga/gesamtspielplan/wettbewerb/EST1/saison_id/2026
+Latvia,https://www.transfermarkt.com/toplyga/gesamtspielplan/wettbewerb/LET1/saison_id/2026
+Lithuania,https://www.transfermarkt.com/toplyga/gesamtspielplan/wettbewerb/LI1/saison_id/2026
+Albania,https://www.transfermarkt.com/toplyga/gesamtspielplan/wettbewerb/ALB1/saison_id/2026
+Kosovo,https://www.transfermarkt.com/toplyga/gesamtspielplan/wettbewerb/KO1/saison_id/2026
+Bosnia and Herzegovina,https://www.transfermarkt.com/toplyga/gesamtspielplan/wettbewerb/BOS1/saison_id/2026
+North Macedonia,https://www.transfermarkt.com/toplyga/gesamtspielplan/wettbewerb/MAZ1/saison_id/2026
+Ukraine,https://www.transfermarkt.com/toplyga/gesamtspielplan/wettbewerb/UKR1/saison_id/2026
+Bulgaria,https://www.transfermarkt.com/toplyga/gesamtspielplan/wettbewerb/BU1/saison_id/2026
+Slovakia,https://www.transfermarkt.com/toplyga/gesamtspielplan/wettbewerb/SLO1/saison_id/2026
+Uzbekistan,https://www.transfermarkt.com/toplyga/gesamtspielplan/wettbewerb/UZ1/saison_id/2026
+Montenegro,https://www.transfermarkt.com/toplyga/gesamtspielplan/wettbewerb/MNE1/saison_id/2026
+Moldova,https://www.transfermarkt.com/toplyga/gesamtspielplan/wettbewerb/MO1N/saison_id/2026
+Romania,https://www.transfermarkt.com/toplyga/gesamtspielplan/wettbewerb/RO1/saison_id/2026
+Japan,https://www.transfermarkt.com/toplyga/gesamtspielplan/wettbewerb/JAP1/saison_id/2026
+South Korea,https://www.transfermarkt.com/toplyga/gesamtspielplan/wettbewerb/RSK1/saison_id/2026
+Luxembourg,https://www.transfermarkt.com/toplyga/gesamtspielplan/wettbewerb/LUX1/saison_id/2026
+Hungary,https://www.transfermarkt.com/toplyga/gesamtspielplan/wettbewerb/UNG1/saison_id/2026
+Greece,https://www.transfermarkt.com/toplyga/gesamtspielplan/wettbewerb/GR1/saison_id/2026
+Turkey,https://www.transfermarkt.com/toplyga/gesamtspielplan/wettbewerb/TR1/saison_id/2026
+Cyprus,https://www.transfermarkt.com/toplyga/gesamtspielplan/wettbewerb/ZYP1/saison_id/2026
