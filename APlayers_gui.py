@@ -81,6 +81,8 @@ class APlayersGUI:
         files_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Filer", menu=files_menu)
         files_menu.add_command(label="Ligor.txt", command=self._open_ligor)
+        files_menu.add_separator()
+        files_menu.add_command(label="Ta bort matcher", command=self._delete_matcher)
 
         view_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Visa", menu=view_menu)
@@ -91,6 +93,16 @@ class APlayersGUI:
         menubar.add_cascade(label="Inställningar", menu=settings_menu)
         settings_menu.add_command(label="Fördröjning...", command=self._settings_delay)
         settings_menu.add_command(label="Försök...", command=self._settings_retries)
+        settings_menu.add_separator()
+
+        self._inc_managers_var = tk.BooleanVar(value=APlayers.INCLUDE_MANAGERS)
+        settings_menu.add_checkbutton(label="Inkludera managers", variable=self._inc_managers_var,
+                                      command=self._toggle_include_managers)
+        self._inc_substitutes_var = tk.BooleanVar(value=APlayers.INCLUDE_SUBSTITUTES)
+        settings_menu.add_checkbutton(label="Inkludera avbytare", variable=self._inc_substitutes_var,
+                                      command=self._toggle_include_substitutes)
+        settings_menu.add_separator()
+        settings_menu.add_command(label="Event labels...", command=self._settings_event_labels)
 
         # --- Progress bar area ---
         prog_frame = tk.Frame(self.root, height=60)
@@ -266,6 +278,18 @@ class APlayersGUI:
     def _open_ligor(self):
         os.startfile(APlayers.LIGOR_PATH)
 
+    def _delete_matcher(self):
+        if not messagebox.askyesno("Bekräfta", "Är du säker på att du vill ta bort alla matcher?\n\nDetta raderar Matcher.json."):
+            return
+        try:
+            os.remove(APlayers.MATCHER_FILE)
+            APlayers.log("Matcher.json borttagen.", "BG")
+        except FileNotFoundError:
+            APlayers.log("Matcher.json finns inte.", "Y")
+        except Exception as e:
+            APlayers.log(f"Fel vid borttagning: {e}", "BR")
+        self._update_counts()
+
     def _open_link(self, event):
         idx = self.console.index(f"@{event.x},{event.y}")
         for (start, end), url in self._link_ranges.items():
@@ -346,6 +370,54 @@ class APlayersGUI:
         text.insert(tk.END, "-" * 50 + "\n")
         text.insert(tk.END, f"{'Totalt':<25} {total_all:>7} {total_pend:>7} {total_succ:>8}\n")
         text.config(state=tk.DISABLED)
+
+    def _toggle_include_managers(self):
+        APlayers.INCLUDE_MANAGERS = self._inc_managers_var.get()
+        APlayers.save_settings()
+
+    def _toggle_include_substitutes(self):
+        APlayers.INCLUDE_SUBSTITUTES = self._inc_substitutes_var.get()
+        APlayers.save_settings()
+
+    def _settings_event_labels(self):
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Event labels")
+        dlg.resizable(False, False)
+        dlg.transient(self.root)
+        dlg.grab_set()
+        if os.path.exists(ICON_PATH):
+            dlg.iconbitmap(ICON_PATH)
+
+        frm = tk.Frame(dlg, padx=12, pady=8)
+        frm.pack()
+
+        tk.Label(frm, text="Labels for sb-sprite events in exports:", font=("", 9, "bold")).grid(
+            row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+
+        entries = {}
+        for i, (key, label) in enumerate(APlayers.EVENT_LABELS.items()):
+            tk.Label(frm, text=f"{key}:", font=("", 9)).grid(row=i + 1, column=0, sticky="e", padx=(0, 6), pady=2)
+            var = tk.StringVar(value=label)
+            entries[key] = var
+            tk.Entry(frm, textvariable=var, width=16, font=("", 9)).grid(row=i + 1, column=1, pady=2)
+
+        def save_labels():
+            for key, var in entries.items():
+                APlayers.EVENT_LABELS[key] = var.get()
+            APlayers.save_settings()
+            dlg.destroy()
+
+        btn_frm = tk.Frame(frm)
+        btn_frm.grid(row=len(entries) + 1, column=0, columnspan=2, pady=(10, 0))
+        tk.Button(btn_frm, text="Save", command=save_labels, padx=16, pady=4,
+                  font=("", 9, "bold")).pack()
+
+        dlg.update_idletasks()
+        w = dlg.winfo_width()
+        h = dlg.winfo_height()
+        x = self.root.winfo_x() + (self.root.winfo_width() - w) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - h) // 2
+        dlg.geometry(f"+{x}+{y}")
 
     def _settings_delay(self):
         dlg = tk.Toplevel(self.root)
@@ -459,8 +531,48 @@ class APlayersGUI:
             subprocess.Popen(["xdg-open", folder])
 
     def _ask_open_folder(self, filepath):
-        if messagebox.askyesno("Export klar", f"Filen sparades.\n\nVill du öppna mappen?"):
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Export klar")
+        dlg.resizable(False, False)
+        dlg.transient(self.root)
+        dlg.grab_set()
+
+        frm = tk.Frame(dlg, padx=16, pady=12)
+        frm.pack()
+
+        tk.Label(frm, text="Filen sparades.\n\nVill du...", font=("", 10)).pack(pady=(0, 10))
+
+        btn_frm = tk.Frame(frm)
+        btn_frm.pack()
+
+        def open_file():
+            dlg.destroy()
+            if sys.platform == "win32":
+                os.startfile(filepath)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", filepath])
+            else:
+                subprocess.Popen(["xdg-open", filepath])
+
+        def open_folder():
+            dlg.destroy()
             self._open_folder(filepath)
+
+        tk.Button(btn_frm, text="Öppna Filen", command=open_file, padx=12, pady=4,
+                  font=("", 9, "bold")).pack(side=tk.LEFT, padx=4)
+        tk.Button(btn_frm, text="Öppna Mappen", command=open_folder, padx=12, pady=4,
+                  font=("", 9, "bold")).pack(side=tk.LEFT, padx=4)
+        tk.Button(btn_frm, text="Nej", command=dlg.destroy, padx=16, pady=4,
+                  font=("", 9)).pack(side=tk.LEFT, padx=4)
+
+        dlg.update_idletasks()
+        w = dlg.winfo_width()
+        h = dlg.winfo_height()
+        x = self.root.winfo_x() + (self.root.winfo_width() - w) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - h) // 2
+        dlg.geometry(f"+{x}+{y}")
+
+        dlg.wait_window()
 
     # --- Worker: Hamta ligor ---
     def _run_hamta_ligor(self):
@@ -588,6 +700,13 @@ class APlayersGUI:
             written = APlayers.export_csv(matcher_data, filepath)
             APlayers.log(f"Exporterade {written} rader till {filepath}", "BG")
             self.root.after(0, lambda fp=filepath: self._ask_open_folder(fp))
+        except PermissionError:
+            self.root.after(0, lambda: messagebox.showerror(
+                "Åtkomst nekad",
+                "Kan inte spara filen!\n\n"
+                "Filen är troligtvis öppen i ett annat program.\n"
+                "Stäng filen och försök igen."))
+            APlayers.log("Fel: Filen är upptagen eller skrivskyddad.", "BR")
         except Exception as e:
             APlayers.log(f"Fel: {e}", "BR")
         finally:
@@ -632,6 +751,13 @@ class APlayersGUI:
             self.root.after(0, lambda fp=filepath: self._ask_open_folder(fp))
         except ImportError as e:
             APlayers.log(str(e), "BR")
+        except PermissionError:
+            self.root.after(0, lambda: messagebox.showerror(
+                "Åtkomst nekad",
+                "Kan inte spara filen!\n\n"
+                "Filen är troligtvis öppen i ett annat program.\n"
+                "Stäng filen och försök igen."))
+            APlayers.log("Fel: Filen är upptagen eller skrivskyddad.", "BR")
         except Exception as e:
             APlayers.log(f"Fel: {e}", "BR")
         finally:

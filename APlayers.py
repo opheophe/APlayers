@@ -19,6 +19,17 @@ HEADERS = {
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DELAY_MS = 2000
 RETRIES = 10
+INCLUDE_MANAGERS = True
+INCLUDE_SUBSTITUTES = True
+EVENT_LABELS = {
+    "sb-aus": "Subbed out",
+    "sb-ein": "Subbed in",
+    "sb-gelb": "Yellow",
+    "sb-gelb-rot": "2nd yellow",
+    "sb-rot": "Red card",
+    "sb-tor": "Goal",
+    "sb-verletzung": "Injury",
+}
 OUTPUT_DIR = SCRIPT_DIR
 LOG_DIR = os.path.join(SCRIPT_DIR, "Logs")
 MAX_FILES = 10
@@ -29,7 +40,7 @@ SETTINGS_PATH = os.path.join(SCRIPT_DIR, "Settings.ini")
 
 
 def load_settings():
-    global DELAY_MS, RETRIES
+    global DELAY_MS, RETRIES, INCLUDE_MANAGERS, INCLUDE_SUBSTITUTES, EVENT_LABELS
     if not os.path.exists(SETTINGS_PATH):
         save_settings()
         return
@@ -38,13 +49,24 @@ def load_settings():
     try:
         DELAY_MS = cfg.getint("Settings", "delay_ms", fallback=2000)
         RETRIES = cfg.getint("Settings", "retries", fallback=10)
+        INCLUDE_MANAGERS = cfg.getboolean("Settings", "include_managers", fallback=True)
+        INCLUDE_SUBSTITUTES = cfg.getboolean("Settings", "include_substitutes", fallback=True)
     except Exception:
         pass
+    if cfg.has_section("EventLabels"):
+        for key, val in cfg.items("EventLabels"):
+            EVENT_LABELS[key] = val
 
 
 def save_settings():
     cfg = configparser.ConfigParser()
-    cfg["Settings"] = {"delay_ms": str(DELAY_MS), "retries": str(RETRIES)}
+    cfg["Settings"] = {
+        "delay_ms": str(DELAY_MS),
+        "retries": str(RETRIES),
+        "include_managers": str(INCLUDE_MANAGERS),
+        "include_substitutes": str(INCLUDE_SUBSTITUTES),
+    }
+    cfg["EventLabels"] = EVENT_LABELS
     with open(SETTINGS_PATH, "w") as f:
         cfg.write(f)
 
@@ -267,12 +289,13 @@ def parse_match(country, match_url, compact=False):
                 parsed = parse_player_row(tr)
 
             if parsed:
-                number, name, role, salary, age, nationality = parsed
+                number, name, role, salary, age, nationality, events = parsed
                 if compact:
-                    rows.append([section, team, number, name, role, salary, age, nationality])
+                    rows.append([section, team, number, name, role, salary, age, nationality, events])
                 else:
+                    fixture = f"{heim_name} vs {gast_name}" if heim_name and gast_name else ""
                     rows.append(
-                        [country, liga, matchday, team, datum, zeit, ergebnis_text, section, number, name, role, salary, age, nationality]
+                        [country, liga, matchday, team, datum, zeit, ergebnis_text, section, number, name, role, salary, age, nationality, fixture, match_url, events]
                     )
 
     return rows, meta
@@ -315,7 +338,10 @@ def parse_player_row(row):
     flag = cells[2].find("img", class_="flaggenrahmen") if len(cells) > 2 else None
     nationality = flag.get("title", "") if flag else ""
 
-    return [number, name, role, salary, age, nationality]
+    event_spans = rows[0].find_all("span", class_=lambda c: c and "sb-sprite" in c)
+    events = " ".join(s.get("class")[-1] for s in event_spans)
+
+    return [number, name, role, salary, age, nationality, events]
 
 
 def parse_manager_row(row):
@@ -341,7 +367,10 @@ def parse_manager_row(row):
     flag = cells[1].find("img", class_="flaggenrahmen") if len(cells) > 1 else None
     nationality = flag.get("title", "") if flag else ""
 
-    return ["-", name, "Manager", "", age, nationality]
+    event_spans = rows[0].find_all("span", class_=lambda c: c and "sb-sprite" in c)
+    events = " ".join(s.get("class")[-1] for s in event_spans)
+
+    return ["-", name, "Manager", "", age, nationality, events]
 
 
 def rotate_files(pattern, max_count):
@@ -406,7 +435,15 @@ def format_duration(sec):
     return f"{s}s"
 
 
-CSV_HEADER = ["country", "liga", "matchday", "team", "date", "time", "result", "section", "number", "name", "role", "salary", "age", "nationality"]
+CSV_HEADER = ["country", "liga", "matchday", "team", "date", "time", "result", "section", "number", "name", "role", "salary", "age", "nationality", "fixture", "url", "events"]
+
+
+def translate_events(events_str):
+    if not events_str:
+        return ""
+    parts = events_str.split()
+    translated = [EVENT_LABELS.get(p, p) for p in parts]
+    return " ".join(translated)
 
 
 def export_csv(matcher_data, output_path):
@@ -424,9 +461,18 @@ def export_csv(matcher_data, output_path):
             time_val = m.get("time", "?")
             result = m.get("result", "?")
             players = m.get("players", [])
+            home = m.get("home", "")
+            away = m.get("away", "")
+            fixture = f"{home} vs {away}" if home and away else ""
+            match_url = m.get("url", "")
             for p in players:
-                section, team, number, name, role, salary, age, nationality = p
-                writer.writerow([country, liga, matchday, team, date, time_val, result, section, number, name, role, salary, age, nationality])
+                section, team, number, name, role, salary, age, nationality = p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7]
+                if section == "Manager" and not INCLUDE_MANAGERS:
+                    continue
+                if section == "Substitutes" and not INCLUDE_SUBSTITUTES:
+                    continue
+                events = translate_events(p[8] if len(p) > 8 else "")
+                writer.writerow([country, liga, matchday, team, date, time_val, result, section, number, name, role, salary, age, nationality, fixture, match_url, events])
                 written += 1
     return written
 
@@ -459,8 +505,11 @@ def export_excel(matcher_data, output_path):
         bottom=Side(style="thin", color="2F5496"),
     )
 
+    TAB_COLORS = ["FF4444", "FF8C00", "FFD700", "44CC44", "4488FF", "CC44CC", "00CCCC", "FF69B4"]
+
     EXCEL_HEADER = ["Country", "League", "Matchday", "Team", "Date", "Time", "Result",
-                    "Section", "Number", "Name", "Role", "Salary", "Age", "Nationality"]
+                    "Section", "Number", "Name", "Role", "Salary", "Age", "Nationality",
+                    "Fixture", "URL", "Events"]
 
     country_to_user = {}
     try:
@@ -485,6 +534,7 @@ def export_excel(matcher_data, output_path):
     for user in sorted(matches_by_user.keys()):
         safe_name = user[:31]
         ws = wb.create_sheet(title=safe_name)
+        ws.sheet_properties.tabColor = TAB_COLORS[(sheet_count) % len(TAB_COLORS)]
         sheet_count += 1
 
         for col_idx, header in enumerate(EXCEL_HEADER, 1):
@@ -506,11 +556,21 @@ def export_excel(matcher_data, output_path):
             time_val = m.get("time", "?")
             result = m.get("result", "?")
             players = m.get("players", [])
+            home = m.get("home", "")
+            away = m.get("away", "")
+            fixture = f"{home} vs {away}" if home and away else ""
+            match_url = m.get("url", "")
 
             for p in players:
-                section, team, number, name, role, salary, age, nationality = p
+                section, team, number, name, role, salary, age, nationality = p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7]
+                if section == "Manager" and not INCLUDE_MANAGERS:
+                    continue
+                if section == "Substitutes" and not INCLUDE_SUBSTITUTES:
+                    continue
+                events = translate_events(p[8] if len(p) > 8 else "")
                 values = [country_val, liga, matchday, team, date, time_val, result,
-                          section, number, name, role, salary, age, nationality]
+                          section, number, name, role, salary, age, nationality,
+                          fixture, match_url, events]
                 for col_idx, value in enumerate(values):
                     cell = ws.cell(row=row_num, column=col_idx + 1, value=value)
                     cell.alignment = cell_alignment
@@ -518,6 +578,8 @@ def export_excel(matcher_data, output_path):
                     v_len = len(str(value)) if value is not None else 0
                     if v_len > col_max[col_idx]:
                         col_max[col_idx] = v_len
+                if match_url:
+                    ws.cell(row=row_num, column=16).hyperlink = match_url
                 row_num += 1
                 total_written += 1
 
@@ -528,6 +590,7 @@ def export_excel(matcher_data, output_path):
         ws.auto_filter.ref = f"A1:{get_column_letter(len(EXCEL_HEADER))}{row_num - 1}"
 
     summary_ws = wb.create_sheet(title="Summary")
+    summary_ws.sheet_properties.tabColor = "548235"
     wb.move_sheet(summary_ws, offset=-sheet_count)
 
     summary_header_font = Font(name="Calibri", bold=True, color="FFFFFF", size=11)
