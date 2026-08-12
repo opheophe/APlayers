@@ -93,6 +93,10 @@ class APlayersGUI:
         menubar.add_cascade(label="Inställningar", menu=settings_menu)
         settings_menu.add_command(label="Fördröjning...", command=self._settings_delay)
         settings_menu.add_command(label="Försök...", command=self._settings_retries)
+        settings_menu.add_command(label="Spelar ålder-cutoff...", command=self._settings_age_cutoff)
+        self._refetch_players_var = tk.BooleanVar(value=APlayers.REFETCH_PLAYERS)
+        settings_menu.add_checkbutton(label="Hämta spelare på nytt", variable=self._refetch_players_var,
+                                      command=self._toggle_refetch_players)
         settings_menu.add_separator()
 
         self._inc_managers_var = tk.BooleanVar(value=APlayers.INCLUDE_MANAGERS)
@@ -127,7 +131,9 @@ class APlayersGUI:
         self.lbl_matches = tk.Label(info_frame, text="Matcher: -", font=("", 9))
         self.lbl_matches.pack(side=tk.LEFT, padx=(0, 20))
         self.lbl_lineups = tk.Label(info_frame, text="Lineups: -", font=("", 9))
-        self.lbl_lineups.pack(side=tk.LEFT)
+        self.lbl_lineups.pack(side=tk.LEFT, padx=(0, 20))
+        self.lbl_players = tk.Label(info_frame, text="Spelare: -", font=("", 9))
+        self.lbl_players.pack(side=tk.LEFT)
 
         # --- Buttons ---
         btn_frame = tk.Frame(self.root)
@@ -140,6 +146,10 @@ class APlayersGUI:
         self.btn_matcher = tk.Button(btn_frame, text="Hämta matcher", command=self.start_hamta_matcher,
                                      padx=14, pady=4, font=("", 9, "bold"))
         self.btn_matcher.pack(side=tk.LEFT, padx=4)
+
+        self.btn_spelare = tk.Button(btn_frame, text="Hämta spelare", command=self.start_hamta_spelare,
+                                     padx=14, pady=4, font=("", 9, "bold"))
+        self.btn_spelare.pack(side=tk.LEFT, padx=4)
 
         self.btn_csv = tk.Button(btn_frame, text="Hämta CSV", command=self.start_hamta_csv,
                                  padx=14, pady=4, font=("", 9, "bold"))
@@ -303,9 +313,12 @@ class APlayersGUI:
         total = len(matcher["matches"])
         pending = sum(1 for m in matcher["matches"] if m["status"] == "pending")
         success = sum(1 for m in matcher["matches"] if m["status"] == "success")
+        players = matcher.get("players", [])
+        detailed = sum(1 for p in players if p.get("detailed"))
         self.lbl_leagues.config(text=f"Ligor: {len(leagues)}")
         self.lbl_matches.config(text=f"Matcher: {total} totalt, {pending} i kö")
         self.lbl_lineups.config(text=f"Lineups: {success} hämtade")
+        self.lbl_players.config(text=f"Spelare: {len(players)} totalt, {detailed} detaljer")
 
     def _view_pending(self):
         matcher = APlayers.load_matcher()
@@ -377,6 +390,10 @@ class APlayersGUI:
 
     def _toggle_include_substitutes(self):
         APlayers.INCLUDE_SUBSTITUTES = self._inc_substitutes_var.get()
+        APlayers.save_settings()
+
+    def _toggle_refetch_players(self):
+        APlayers.REFETCH_PLAYERS = self._refetch_players_var.get()
         APlayers.save_settings()
 
     def _settings_event_labels(self):
@@ -485,13 +502,45 @@ class APlayersGUI:
         entry.bind("<Return>", lambda e: save_retries())
         entry.focus_set()
 
+    def _settings_age_cutoff(self):
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Spelar ålder-cutoff")
+        dlg.geometry("250x100")
+        dlg.resizable(False, False)
+        dlg.transient(self.root)
+        dlg.grab_set()
+        if os.path.exists(ICON_PATH):
+            dlg.iconbitmap(ICON_PATH)
+
+        tk.Label(dlg, text="Ålder-cutoff (år):").pack(pady=(10, 4))
+        var = tk.StringVar(value=str(APlayers.PLAYER_AGE_CUTOFF))
+        entry = tk.Entry(dlg, textvariable=var, width=10, justify="center")
+        entry.pack()
+        entry.select_range(0, tk.END)
+
+        def save_age_cutoff():
+            try:
+                val = int(var.get())
+                APlayers.PLAYER_AGE_CUTOFF = val
+                APlayers.save_settings()
+                dlg.destroy()
+            except ValueError:
+                pass
+
+        btn = tk.Button(dlg, text="Spara", command=save_age_cutoff)
+        btn.pack(pady=8)
+        entry.bind("<Return>", lambda e: save_age_cutoff())
+        entry.focus_set()
+
     # --- Button state management ---
     def _set_buttons(self, running):
         self._running = running
         state = tk.DISABLED if running else tk.NORMAL
         self.btn_ligor.config(state=state)
         self.btn_matcher.config(state=state)
+        self.btn_spelare.config(state=state)
         self.btn_csv.config(state=state)
+        self.btn_excel.config(state=state)
         self.btn_abort.config(state=tk.NORMAL if running else tk.DISABLED)
 
     def abort(self):
@@ -512,6 +561,12 @@ class APlayersGUI:
         self._set_buttons(True)
         _abort_event.clear()
         t = threading.Thread(target=self._run_hamta_matcher, daemon=True)
+        t.start()
+
+    def start_hamta_spelare(self):
+        self._set_buttons(True)
+        _abort_event.clear()
+        t = threading.Thread(target=self._run_hamta_spelare, daemon=True)
         t.start()
 
     def start_hamta_csv(self):
@@ -666,6 +721,35 @@ class APlayersGUI:
         finally:
             self.root.after(0, lambda: self._set_buttons(False))
             self.root.after(0, lambda: setattr(self, '_task_start', None))
+            self.root.after(0, self._update_counts)
+            put_progress(0, 1, "Redo")
+
+    # --- Worker: Hamta spelare ---
+    def _run_hamta_spelare(self):
+        try:
+            matcher_data = APlayers.load_matcher()
+            added = APlayers.collect_players(matcher_data)
+            APlayers.save_matcher(matcher_data)
+            if added:
+                APlayers.log(f"Lade till {added} spelare i spellistan.", "BG")
+            else:
+                APlayers.log("Inga nya spelare.", "Y")
+
+            cutoff = APlayers.PLAYER_AGE_CUTOFF
+            fetched = APlayers.fetch_player_details(
+                matcher_data, cutoff,
+                progress_cb=lambda cur, tot, name: put_progress(cur, tot, f"Hämtar detaljer: {name}"),
+                refetch=APlayers.REFETCH_PLAYERS
+            )
+            APlayers.save_matcher(matcher_data)
+            if fetched:
+                APlayers.log(f"Hämtade detaljer för {fetched} spelare.", "BG")
+            else:
+                APlayers.log("Inga spelare att hämta detaljer för.", "Y")
+        except Exception as e:
+            APlayers.log(f"Fel: {e}", "BR")
+        finally:
+            self.root.after(0, lambda: self._set_buttons(False))
             self.root.after(0, self._update_counts)
             put_progress(0, 1, "Redo")
 

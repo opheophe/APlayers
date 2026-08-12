@@ -21,6 +21,8 @@ DELAY_MS = 2000
 RETRIES = 10
 INCLUDE_MANAGERS = True
 INCLUDE_SUBSTITUTES = True
+PLAYER_AGE_CUTOFF = 18
+REFETCH_PLAYERS = False
 EVENT_LABELS = {
     "sb-aus": "Subbed out",
     "sb-ein": "Subbed in",
@@ -40,7 +42,7 @@ SETTINGS_PATH = os.path.join(SCRIPT_DIR, "Settings.ini")
 
 
 def load_settings():
-    global DELAY_MS, RETRIES, INCLUDE_MANAGERS, INCLUDE_SUBSTITUTES, EVENT_LABELS
+    global DELAY_MS, RETRIES, INCLUDE_MANAGERS, INCLUDE_SUBSTITUTES, EVENT_LABELS, PLAYER_AGE_CUTOFF, REFETCH_PLAYERS
     if not os.path.exists(SETTINGS_PATH):
         save_settings()
         return
@@ -51,6 +53,8 @@ def load_settings():
         RETRIES = cfg.getint("Settings", "retries", fallback=10)
         INCLUDE_MANAGERS = cfg.getboolean("Settings", "include_managers", fallback=True)
         INCLUDE_SUBSTITUTES = cfg.getboolean("Settings", "include_substitutes", fallback=True)
+        PLAYER_AGE_CUTOFF = cfg.getint("Settings", "player_age_cutoff", fallback=18)
+        REFETCH_PLAYERS = cfg.getboolean("Settings", "refetch_players", fallback=False)
     except Exception:
         pass
     if cfg.has_section("EventLabels"):
@@ -65,6 +69,8 @@ def save_settings():
         "retries": str(RETRIES),
         "include_managers": str(INCLUDE_MANAGERS),
         "include_substitutes": str(INCLUDE_SUBSTITUTES),
+        "player_age_cutoff": str(PLAYER_AGE_CUTOFF),
+        "refetch_players": str(REFETCH_PLAYERS),
     }
     cfg["EventLabels"] = EVENT_LABELS
     with open(SETTINGS_PATH, "w") as f:
@@ -289,13 +295,13 @@ def parse_match(country, match_url, compact=False):
                 parsed = parse_player_row(tr)
 
             if parsed:
-                number, name, role, salary, age, nationality, events = parsed
+                number, name, player_id, role, salary, age, nationality, events = parsed
                 if compact:
-                    rows.append([section, team, number, name, role, salary, age, nationality, events])
+                    rows.append([section, team, number, name, player_id, role, salary, age, nationality, events])
                 else:
                     fixture = f"{heim_name} vs {gast_name}" if heim_name and gast_name else ""
                     rows.append(
-                        [country, liga, matchday, team, datum, zeit, ergebnis_text, section, number, name, role, salary, age, nationality, fixture, match_url, events]
+                        [country, liga, matchday, team, datum, zeit, ergebnis_text, section, number, name, player_id, role, salary, age, nationality, fixture, match_url, events]
                     )
 
     return rows, meta
@@ -307,6 +313,12 @@ def parse_player_row(row):
 
     name_tag = row.select_one("a.wichtig")
     name = name_tag.get_text(strip=True) if name_tag else "?"
+    player_id = ""
+    if name_tag:
+        href = name_tag.get("href", "")
+        m = re.search(r"/spieler/(\d+)", href)
+        if m:
+            player_id = m.group(1)
 
     cells = row.find_all("td", recursive=False)
     if len(cells) < 3:
@@ -341,12 +353,18 @@ def parse_player_row(row):
     event_spans = rows[0].find_all("span", class_=lambda c: c and "sb-sprite" in c)
     events = " ".join(s.get("class")[-1] for s in event_spans)
 
-    return [number, name, role, salary, age, nationality, events]
+    return [number, name, player_id, role, salary, age, nationality, events]
 
 
 def parse_manager_row(row):
     name_tag = row.select_one("a.wichtig")
     name = name_tag.get_text(strip=True) if name_tag else "?"
+    player_id = ""
+    if name_tag:
+        href = name_tag.get("href", "")
+        m = re.search(r"/spieler/(\d+)", href)
+        if m:
+            player_id = m.group(1)
 
     cells = row.find_all("td", recursive=False)
     if len(cells) < 2:
@@ -370,7 +388,7 @@ def parse_manager_row(row):
     event_spans = rows[0].find_all("span", class_=lambda c: c and "sb-sprite" in c)
     events = " ".join(s.get("class")[-1] for s in event_spans)
 
-    return ["-", name, "Manager", "", age, nationality, events]
+    return ["-", name, player_id, "Manager", "", age, nationality, events]
 
 
 def rotate_files(pattern, max_count):
@@ -425,6 +443,195 @@ def save_matcher(data):
         json.dump(data, f, indent=2, ensure_ascii=False)
 
 
+def collect_players(matcher_data):
+    if "players" not in matcher_data:
+        matcher_data["players"] = []
+
+    existing_ids = {p.get("id") for p in matcher_data["players"] if p.get("id")}
+    added = 0
+
+    for m in matcher_data["matches"]:
+        if m.get("status") != "success":
+            continue
+        for p in m.get("players", []):
+            if len(p) < 10:
+                continue
+            name = p[3]
+            player_id = p[4]
+            age = p[7]
+            if not player_id or player_id in existing_ids:
+                continue
+            matcher_data["players"].append({"id": player_id, "name": name, "age": age})
+            existing_ids.add(player_id)
+            added += 1
+
+    return added
+
+
+def _slugify(name):
+    slug = re.sub(r"[^\w\s-]", "", name.lower())
+    slug = re.sub(r"\s+", "-", slug).strip("-")
+    return slug or "player"
+
+
+def player_profile_url(name, player_id):
+    return f"https://www.transfermarkt.com/{_slugify(name)}/profil/spieler/{player_id}"
+
+
+def fetch_player_profile(name, player_id):
+    resp = fetch(player_profile_url(name, player_id))
+    if resp is None or resp.status_code != 200:
+        return None
+    soup = BeautifulSoup(resp.text, "html.parser")
+    info = {}
+
+    club_a = soup.select_one("span.data-header__club a")
+    if club_a:
+        info["club"] = club_a.get_text(strip=True) or club_a.get("title", "")
+
+    dob = soup.select_one("span[itemprop='birthDate']")
+    if dob:
+        info["dob"] = dob.get_text(strip=True).split("(")[0].strip()
+
+    nat = soup.select_one("span[itemprop='nationality']")
+    if nat:
+        info["country"] = nat.get_text(" ", strip=True)
+
+    height = soup.select_one("span[itemprop='height']")
+    if height:
+        info["height"] = height.get_text(strip=True)
+
+    for li in soup.select("li.data-header__label"):
+        label = li.get_text(" ", strip=True)
+        if label.startswith("Position:"):
+            content = li.select_one("span.data-header__content")
+            if content:
+                info["position"] = content.get_text(strip=True)
+            break
+
+    return info
+
+
+def fetch_player_performance(player_id):
+    url = f"https://www.transfermarkt.com/ceapi/performance-game/{player_id}"
+    resp = fetch(url)
+    if resp is None or resp.status_code != 200:
+        return None
+    try:
+        data = resp.json()
+    except Exception:
+        return None
+    if not data.get("success"):
+        return None
+    return (data.get("data") or {}).get("performance") or []
+
+
+IDENTITY_FIELDS = {"shirtNumber", "positionId", "age", "primaryClubId", "injuryId",
+                   "absenceId", "ageDiscrepancyDays", "grade", "pointsOnThePitch", "fairPlayPoints"}
+RATIO_FIELDS = {"tacklesWonRatio", "passesReachedRatio", "scoringAttemptsOnGoalRatio"}
+BOOL_FIELDS = {"isCaptain", "isStarting"}
+
+
+def aggregate_performance(entries):
+    groups = {}
+    order = []
+    for e in entries:
+        gi = e.get("gameInformation") or {}
+        stats = e.get("statistics") or {}
+        league = gi.get("competitionId") or "?"
+        season = gi.get("seasonId")
+        key = (league, season)
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(stats)
+
+    result = []
+    for league, season in order:
+        sums = {}
+        ratio_sum = {}
+        ratio_cnt = {}
+        last = {}
+        bool_cnt = {}
+        games = 0
+        for stats in groups[(league, season)]:
+            games += 1
+            for cat, catval in stats.items():
+                if not isinstance(catval, dict):
+                    continue
+                for k, v in catval.items():
+                    if v is None:
+                        continue
+                    if k in BOOL_FIELDS:
+                        bool_cnt[k] = bool_cnt.get(k, 0) + (1 if v else 0)
+                    elif k in RATIO_FIELDS:
+                        ratio_sum[k] = ratio_sum.get(k, 0.0) + v
+                        ratio_cnt[k] = ratio_cnt.get(k, 0) + 1
+                    elif k in IDENTITY_FIELDS:
+                        last[k] = v
+                    elif isinstance(v, (int, float)):
+                        sums[k] = sums.get(k, 0) + v
+
+        entry = {"league": league, "season": season, "games": games}
+        for k, v in sums.items():
+            entry[k] = v
+        for k, v in ratio_sum.items():
+            cnt = ratio_cnt.get(k, 0)
+            entry[k] = round(v / cnt, 2) if cnt else None
+        for k, v in bool_cnt.items():
+            entry[k] = v
+        for k, v in last.items():
+            entry[k] = v
+        result.append(entry)
+
+    return result
+
+
+DETAIL_FIELDS = ("club", "dob", "position", "country", "height", "performance", "detailed")
+
+
+def fetch_player_details(matcher_data, cutoff, progress_cb=None, refetch=False):
+    players = matcher_data.get("players", [])
+    fetched = 0
+    total = len(players)
+
+    for i, player in enumerate(players):
+        if abort_check():
+            break
+
+        age_raw = str(player.get("age", "")).strip()
+        age = int(age_raw) if age_raw.isdigit() else None
+        if age is None or age > cutoff:
+            continue
+        if player.get("detailed") and not refetch:
+            continue
+
+        pid = player.get("id", "")
+        name = player.get("name", "")
+        if not pid:
+            continue
+
+        if progress_cb:
+            progress_cb(i + 1, total, name)
+
+        for field in DETAIL_FIELDS:
+            player.pop(field, None)
+
+        profile = fetch_player_profile(name, pid)
+        performance = fetch_player_performance(pid)
+
+        if profile:
+            player.update(profile)
+            player["detailed"] = True
+        if performance is not None:
+            player["performance"] = aggregate_performance(performance)
+
+        fetched += 1
+        save_matcher(matcher_data)
+
+    return fetched
+
+
 def format_duration(sec):
     m, s = divmod(int(sec), 60)
     h, m = divmod(m, 60)
@@ -435,7 +642,7 @@ def format_duration(sec):
     return f"{s}s"
 
 
-CSV_HEADER = ["country", "liga", "matchday", "team", "date", "time", "result", "section", "number", "name", "role", "salary", "age", "nationality", "fixture", "url", "events"]
+CSV_HEADER = ["country", "liga", "matchday", "team", "date", "time", "result", "section", "number", "name", "player_id", "role", "salary", "age", "nationality", "fixture", "url", "events"]
 
 
 def translate_events(events_str):
@@ -466,13 +673,18 @@ def export_csv(matcher_data, output_path):
             fixture = f"{home} vs {away}" if home and away else ""
             match_url = m.get("url", "")
             for p in players:
-                section, team, number, name, role, salary, age, nationality = p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7]
+                if len(p) >= 10:
+                    section, team, number, name, player_id, role, salary, age, nationality = p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8]
+                    events = translate_events(p[9] if len(p) > 9 else "")
+                else:
+                    section, team, number, name, role, salary, age, nationality = p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7]
+                    events = translate_events(p[8] if len(p) > 8 else "")
+                    player_id = ""
                 if section == "Manager" and not INCLUDE_MANAGERS:
                     continue
                 if section == "Substitutes" and not INCLUDE_SUBSTITUTES:
                     continue
-                events = translate_events(p[8] if len(p) > 8 else "")
-                writer.writerow([country, liga, matchday, team, date, time_val, result, section, number, name, role, salary, age, nationality, fixture, match_url, events])
+                writer.writerow([country, liga, matchday, team, date, time_val, result, section, number, name, player_id, role, salary, age, nationality, fixture, match_url, events])
                 written += 1
     return written
 
@@ -508,7 +720,7 @@ def export_excel(matcher_data, output_path):
     TAB_COLORS = ["FF4444", "FF8C00", "FFD700", "44CC44", "4488FF", "CC44CC", "00CCCC", "FF69B4"]
 
     EXCEL_HEADER = ["Country", "League", "Matchday", "Team", "Date", "Time", "Result",
-                    "Section", "Number", "Name", "Role", "Salary", "Age", "Nationality",
+                    "Section", "Number", "Name", "Player ID", "Role", "Salary", "Age", "Nationality",
                     "Fixture", "URL", "Events"]
 
     country_to_user = {}
@@ -562,14 +774,19 @@ def export_excel(matcher_data, output_path):
             match_url = m.get("url", "")
 
             for p in players:
-                section, team, number, name, role, salary, age, nationality = p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7]
+                if len(p) >= 10:
+                    section, team, number, name, player_id, role, salary, age, nationality = p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8]
+                    events = translate_events(p[9] if len(p) > 9 else "")
+                else:
+                    section, team, number, name, role, salary, age, nationality = p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7]
+                    events = translate_events(p[8] if len(p) > 8 else "")
+                    player_id = ""
                 if section == "Manager" and not INCLUDE_MANAGERS:
                     continue
                 if section == "Substitutes" and not INCLUDE_SUBSTITUTES:
                     continue
-                events = translate_events(p[8] if len(p) > 8 else "")
                 values = [country_val, liga, matchday, team, date, time_val, result,
-                          section, number, name, role, salary, age, nationality,
+                          section, number, name, player_id, role, salary, age, nationality,
                           fixture, match_url, events]
                 for col_idx, value in enumerate(values):
                     cell = ws.cell(row=row_num, column=col_idx + 1, value=value)
@@ -579,7 +796,7 @@ def export_excel(matcher_data, output_path):
                     if v_len > col_max[col_idx]:
                         col_max[col_idx] = v_len
                 if match_url:
-                    ws.cell(row=row_num, column=16).hyperlink = match_url
+                    ws.cell(row=row_num, column=17).hyperlink = match_url
                 row_num += 1
                 total_written += 1
 
