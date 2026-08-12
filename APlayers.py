@@ -150,8 +150,12 @@ def load_leagues(path=LIGOR_PATH):
         for line in f:
             line = line.strip()
             if line:
-                name, url = line.split(",", 1)
-                leagues.append((name, url))
+                parts = line.split(",", 2)
+                if len(parts) == 3:
+                    user, name, url = parts
+                else:
+                    user, name, url = parts[0], parts[0], parts[1]
+                leagues.append((user, name, url))
     return leagues
 
 
@@ -427,6 +431,132 @@ def export_csv(matcher_data, output_path):
     return written
 
 
+def export_excel(matcher_data, output_path):
+    try:
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        from openpyxl.utils import get_column_letter
+    except ImportError:
+        raise ImportError("openpyxl krävs för Excel-export. Installera med: pip install openpyxl")
+
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+
+    header_font = Font(name="Calibri", bold=True, color="FFFFFF", size=11)
+    header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+    header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    cell_alignment = Alignment(vertical="center")
+    thin_border = Border(
+        left=Side(style="thin", color="D9D9D9"),
+        right=Side(style="thin", color="D9D9D9"),
+        top=Side(style="thin", color="D9D9D9"),
+        bottom=Side(style="thin", color="D9D9D9"),
+    )
+    header_border = Border(
+        left=Side(style="thin", color="2F5496"),
+        right=Side(style="thin", color="2F5496"),
+        top=Side(style="thin", color="2F5496"),
+        bottom=Side(style="thin", color="2F5496"),
+    )
+
+    EXCEL_HEADER = ["Country", "League", "Matchday", "Team", "Date", "Time", "Result",
+                    "Section", "Number", "Name", "Role", "Salary", "Age", "Nationality"]
+
+    country_to_user = {}
+    try:
+        for user, name, _url in load_leagues():
+            country_to_user[name] = user
+    except Exception:
+        pass
+
+    matches_by_user = {}
+    for m in matcher_data["matches"]:
+        if m.get("status") != "success":
+            continue
+        country = m.get("country", "?")
+        user = country_to_user.get(country, country.split(",")[0].strip() if "," in country else country)
+        if user not in matches_by_user:
+            matches_by_user[user] = []
+        matches_by_user[user].append(m)
+
+    total_written = 0
+    sheet_count = 0
+
+    for user in sorted(matches_by_user.keys()):
+        safe_name = user[:31]
+        ws = wb.create_sheet(title=safe_name)
+        sheet_count += 1
+
+        for col_idx, header in enumerate(EXCEL_HEADER, 1):
+            cell = ws.cell(row=1, column=col_idx, value=header)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = header_alignment
+            cell.border = header_border
+
+        ws.freeze_panes = "A2"
+
+        row_num = 2
+        col_max = [len(h) for h in EXCEL_HEADER]
+        for m in matches_by_user[user]:
+            country_val = m.get("country", "?")
+            liga = m.get("liga", "?")
+            matchday = m.get("matchday", "?")
+            date = m.get("date", "?")
+            time_val = m.get("time", "?")
+            result = m.get("result", "?")
+            players = m.get("players", [])
+
+            for p in players:
+                section, team, number, name, role, salary, age, nationality = p
+                values = [country_val, liga, matchday, team, date, time_val, result,
+                          section, number, name, role, salary, age, nationality]
+                for col_idx, value in enumerate(values):
+                    cell = ws.cell(row=row_num, column=col_idx + 1, value=value)
+                    cell.alignment = cell_alignment
+                    cell.border = thin_border
+                    v_len = len(str(value)) if value is not None else 0
+                    if v_len > col_max[col_idx]:
+                        col_max[col_idx] = v_len
+                row_num += 1
+                total_written += 1
+
+        for col_idx, max_w in enumerate(col_max):
+            col_letter = get_column_letter(col_idx + 1)
+            ws.column_dimensions[col_letter].width = min(max_w + 3, 150)
+
+        ws.auto_filter.ref = f"A1:{get_column_letter(len(EXCEL_HEADER))}{row_num - 1}"
+
+    summary_ws = wb.create_sheet(title="Summary")
+    wb.move_sheet(summary_ws, offset=-sheet_count)
+
+    summary_header_font = Font(name="Calibri", bold=True, color="FFFFFF", size=11)
+    summary_header_fill = PatternFill(start_color="548235", end_color="548235", fill_type="solid")
+    for col_idx, header in enumerate(["User", "Matches", "Players"], 1):
+        cell = summary_ws.cell(row=1, column=col_idx, value=header)
+        cell.font = summary_header_font
+        cell.fill = summary_header_fill
+        cell.alignment = header_alignment
+        cell.border = header_border
+
+    summary_row = 2
+    for user in sorted(matches_by_user.keys()):
+        user_matches = matches_by_user[user]
+        count = sum(len(m.get("players", [])) for m in user_matches)
+        summary_ws.cell(row=summary_row, column=1, value=user).border = thin_border
+        summary_ws.cell(row=summary_row, column=2, value=len(user_matches)).border = thin_border
+        summary_ws.cell(row=summary_row, column=3, value=count).border = thin_border
+        summary_row += 1
+
+    summary_ws.column_dimensions["A"].width = 18
+    summary_ws.column_dimensions["B"].width = 10
+    summary_ws.column_dimensions["C"].width = 12
+    summary_ws.freeze_panes = "A2"
+
+    wb.save(output_path)
+    return total_written
+
+
 def main():
     global log_handle
 
@@ -464,7 +594,7 @@ def main():
 
     existing_urls = {m["url"] for m in matcher_data["matches"]}
     new_matches = []
-    for country, url in tqdm(leagues, desc="Fetching fixtures", unit="league"):
+    for user, country, url in tqdm(leagues, desc="Fetching fixtures", unit="league"):
         match_urls = extract_result_links(country, url)
         new_count = 0
         for m in match_urls:

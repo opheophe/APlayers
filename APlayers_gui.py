@@ -1,8 +1,10 @@
 import os
 import re
+import sys
 import time
 import queue
 import threading
+import subprocess
 import tkinter as tk
 from tkinter import ttk, scrolledtext, filedialog, messagebox
 from datetime import datetime
@@ -120,19 +122,23 @@ class APlayersGUI:
         btn_frame.pack(fill=tk.X, padx=10, pady=8)
 
         self.btn_ligor = tk.Button(btn_frame, text="Hämta ligor", command=self.start_hamta_ligor,
-                                   bg="#0066cc", fg="white", padx=14, pady=4, font=("", 9, "bold"))
+                                   padx=14, pady=4, font=("", 9, "bold"))
         self.btn_ligor.pack(side=tk.LEFT, padx=4)
 
         self.btn_matcher = tk.Button(btn_frame, text="Hämta matcher", command=self.start_hamta_matcher,
-                                     bg="#009999", fg="white", padx=14, pady=4, font=("", 9, "bold"))
+                                     padx=14, pady=4, font=("", 9, "bold"))
         self.btn_matcher.pack(side=tk.LEFT, padx=4)
 
         self.btn_csv = tk.Button(btn_frame, text="Hämta CSV", command=self.start_hamta_csv,
-                                 bg="#00aa00", fg="white", padx=14, pady=4, font=("", 9, "bold"))
+                                 padx=14, pady=4, font=("", 9, "bold"))
         self.btn_csv.pack(side=tk.LEFT, padx=4)
 
+        self.btn_excel = tk.Button(btn_frame, text="Export excel", command=self.start_export_excel,
+                                   padx=14, pady=4, font=("", 9, "bold"))
+        self.btn_excel.pack(side=tk.LEFT, padx=4)
+
         self.btn_abort = tk.Button(btn_frame, text="Avbryt", command=self.abort,
-                                   bg="#cc0000", fg="white", padx=14, pady=4, font=("", 9, "bold"),
+                                   padx=14, pady=4, font=("", 9, "bold"),
                                    state=tk.DISABLED)
         self.btn_abort.pack(side=tk.LEFT, padx=4)
 
@@ -442,6 +448,20 @@ class APlayersGUI:
         t = threading.Thread(target=self._run_hamta_csv, daemon=True)
         t.start()
 
+    @staticmethod
+    def _open_folder(filepath):
+        folder = os.path.dirname(os.path.abspath(filepath))
+        if sys.platform == "win32":
+            os.startfile(folder)
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", folder])
+        else:
+            subprocess.Popen(["xdg-open", folder])
+
+    def _ask_open_folder(self, filepath):
+        if messagebox.askyesno("Export klar", f"Filen sparades.\n\nVill du öppna mappen?"):
+            self._open_folder(filepath)
+
     # --- Worker: Hamta ligor ---
     def _run_hamta_ligor(self):
         try:
@@ -455,7 +475,7 @@ class APlayersGUI:
             total_leagues = len(leagues)
             new_matches = []
 
-            for i, (country, url) in enumerate(leagues):
+            for i, (user, country, url) in enumerate(leagues):
                 if _abort_event.is_set():
                     APlayers.log("Avbruten av användare.", "BR")
                     break
@@ -567,6 +587,51 @@ class APlayersGUI:
 
             written = APlayers.export_csv(matcher_data, filepath)
             APlayers.log(f"Exporterade {written} rader till {filepath}", "BG")
+            self.root.after(0, lambda fp=filepath: self._ask_open_folder(fp))
+        except Exception as e:
+            APlayers.log(f"Fel: {e}", "BR")
+        finally:
+            self.root.after(0, lambda: self._set_buttons(False))
+
+    # --- Worker: Export excel ---
+    def start_export_excel(self):
+        self._set_buttons(True)
+        _abort_event.clear()
+        t = threading.Thread(target=self._run_export_excel, daemon=True)
+        t.start()
+
+    def _run_export_excel(self):
+        try:
+            matcher_data = APlayers.load_matcher()
+            success_count = sum(1 for m in matcher_data["matches"] if m["status"] == "success")
+            if success_count == 0:
+                APlayers.log("Inga hämtade matcher att exportera.", "Y")
+                return
+
+            now = datetime.now()
+            default_name = f"Output {now.strftime('%Y-%m-%d')}.xlsx"
+            filepath = filedialog.asksaveasfilename(
+                parent=self.root,
+                title="Save Excel",
+                initialfile=default_name,
+                defaultextension=".xlsx",
+                filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")]
+            )
+
+            if not filepath:
+                APlayers.log("Excel-export avbruten.", "Y")
+                return
+
+            if os.path.exists(filepath):
+                if not messagebox.askyesno("Skriv över?", f"'{os.path.basename(filepath)}' finns redan.\nSkriv över?"):
+                    APlayers.log("Excel-export avbruten.", "Y")
+                    return
+
+            written = APlayers.export_excel(matcher_data, filepath)
+            APlayers.log(f"Exporterade {written} rader till {filepath}", "BG")
+            self.root.after(0, lambda fp=filepath: self._ask_open_folder(fp))
+        except ImportError as e:
+            APlayers.log(str(e), "BR")
         except Exception as e:
             APlayers.log(f"Fel: {e}", "BR")
         finally:
