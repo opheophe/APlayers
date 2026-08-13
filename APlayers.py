@@ -196,17 +196,25 @@ FILTER_KEYS = ("responsible", "liga", "year", "country", "section", "position", 
 
 def load_filters():
     cfg = _load_config()
-    filters = {key: "All" for key in FILTER_KEYS}
+    filters = {key: [] for key in FILTER_KEYS}
     if cfg.has_section("Filters"):
         for key in FILTER_KEYS:
             if cfg.has_option("Filters", key):
-                filters[key] = cfg.get("Filters", key)
+                raw = cfg.get("Filters", key)
+                try:
+                    val = json.loads(raw)
+                    if isinstance(val, list):
+                        filters[key] = val
+                    elif val:
+                        filters[key] = [val]
+                except ValueError:
+                    filters[key] = [raw] if raw and raw != "All" else []
     return filters
 
 
 def save_filters(filters):
     cfg = _load_config()
-    cfg["Filters"] = {key: str(filters.get(key, "All")) for key in FILTER_KEYS}
+    cfg["Filters"] = {key: json.dumps(filters.get(key) or []) for key in FILTER_KEYS}
     _write_config(cfg)
 
 
@@ -666,13 +674,13 @@ def match_filter_league(league, active_ids, sel):
         return False
     if not sel:
         return True
-    if sel.get("responsible") and league.get("Responsible") != sel["responsible"]:
+    if sel.get("responsible") and league.get("Responsible") not in sel["responsible"]:
         return False
-    if sel.get("liga") and league.get("Name") != sel["liga"]:
+    if sel.get("liga") and league.get("Name") not in sel["liga"]:
         return False
-    if sel.get("year") and league.get("Year") != sel["year"]:
+    if sel.get("year") and league.get("Year") not in sel["year"]:
         return False
-    if sel.get("country") and league.get("Country") != sel["country"]:
+    if sel.get("country") and league.get("Country") not in sel["country"]:
         return False
     return True
 
@@ -680,13 +688,13 @@ def match_filter_league(league, active_ids, sel):
 def filter_ligor(ligor, sel):
     result = []
     for l in ligor:
-        if sel.get("responsible") and l.get("responsible") != sel["responsible"]:
+        if sel.get("responsible") and l.get("responsible") not in sel["responsible"]:
             continue
-        if sel.get("liga") and l.get("name") != sel["liga"]:
+        if sel.get("liga") and l.get("name") not in sel["liga"]:
             continue
-        if sel.get("year") and l.get("year") != sel["year"]:
+        if sel.get("year") and l.get("year") not in sel["year"]:
             continue
-        if sel.get("country") and l.get("country") != sel["country"]:
+        if sel.get("country") and l.get("country") not in sel["country"]:
             continue
         result.append(l)
     return result
@@ -695,11 +703,11 @@ def filter_ligor(ligor, sel):
 def match_filter_player(row, sel):
     if not sel:
         return True
-    if sel.get("section") and (len(row) < 1 or row[0] != sel["section"]):
+    if sel.get("section") and (len(row) < 1 or row[0] not in sel["section"]):
         return False
-    if sel.get("position") and (len(row) < 6 or row[5] != sel["position"]):
+    if sel.get("position") and (len(row) < 6 or row[5] not in sel["position"]):
         return False
-    if sel.get("age") and (len(row) < 8 or row[7] != sel["age"]):
+    if sel.get("age") and (len(row) < 8 or row[7] not in sel["age"]):
         return False
     return True
 

@@ -10,6 +10,16 @@ from tkinter import ttk, scrolledtext, filedialog, messagebox
 from tkinter import font as tkfont
 from datetime import datetime
 
+import customtkinter as ctk
+ctk.set_appearance_mode("light")
+ctk.set_default_color_theme("blue")
+
+DROPDOWN_BG = "#FFF3B0"
+DROPDOWN_BG_HOVER = "#F6E27A"
+DROPDOWN_TEXT = "#333333"
+DROPDOWN_WIDTH = 130
+DROPDOWN_HEIGHT = 22
+
 try:
     import ctypes
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("APlayers.App")
@@ -58,6 +68,153 @@ COLOR_MAP = {
     "BY": "#ffff33", "BB": "#3399ff", "BC": "#33ffff",
     "BW": "#ffffff",
 }
+
+
+class MultiSelectDropdown:
+    def __init__(self, parent, options=None, callback=None, width=DROPDOWN_WIDTH, font=None):
+        self._selected = set()
+        self._options = []
+        self._callback = callback
+        self._popup = None
+        self._vars = {}
+        self.btn = ctk.CTkButton(parent, text="All  ▾", width=width, height=DROPDOWN_HEIGHT,
+                                 corner_radius=6, anchor="w",
+                                 fg_color=DROPDOWN_BG, hover_color=DROPDOWN_BG_HOVER,
+                                 text_color=DROPDOWN_TEXT, command=self._toggle_popup)
+        if options:
+            self.set_options(options)
+
+    def set_options(self, options):
+        self._options = list(options)
+        self._selected &= set(options)
+        self._update_text()
+
+    def set_selected(self, values):
+        self._selected = set(values) & set(self._options)
+        self._update_text()
+
+    def get_selected(self):
+        return list(self._selected)
+
+    def _update_text(self):
+        suffix = "  ▾"
+        budget = 112
+
+        if not self._selected:
+            label = "All"
+        else:
+            names = sorted(self._selected)
+            if len(names) == 1:
+                label = names[0]
+            else:
+                label = ", ".join(names[:3])
+                if len(names) > 3:
+                    label += f" (+{len(names) - 3})"
+
+        font = self.btn.cget("font")
+        if font.measure(label + suffix) > budget:
+            if len(self._selected) > 1:
+                label = f"{len(self._selected)} valda"
+            else:
+                while label and font.measure(label + "…" + suffix) > budget:
+                    label = label[:-1]
+                label += "…"
+
+        self.btn.configure(text=label + suffix)
+
+    def _toggle_popup(self):
+        if self._popup is not None:
+            self._close_popup()
+        else:
+            self._open_popup()
+
+    def _open_popup(self):
+        self._close_popup()
+        popup = ctk.CTkToplevel(self.btn)
+        popup.overrideredirect(True)
+        try:
+            popup.transient(self.btn.winfo_toplevel())
+        except Exception:
+            pass
+        self._popup = popup
+
+        longest = max([len(str(o)) for o in self._options] or [4])
+        popup_w = max(190, min(380, longest * 11 + 70))
+        list_h = min(240, max(64, len(self._options) * 36 + 12))
+
+        x = self.btn.winfo_rootx()
+        y = self.btn.winfo_rooty() + self.btn.winfo_height()
+        popup.geometry(f"+{x}+{y}")
+        popup.attributes("-topmost", True)
+
+        frame = ctk.CTkScrollableFrame(popup, width=popup_w, height=list_h)
+        frame.pack(fill="both", expand=True, padx=4, pady=(4, 0))
+
+        self._vars = {}
+        for opt in self._options:
+            var = tk.BooleanVar(value=(opt in self._selected))
+            self._vars[opt] = var
+            cb = ctk.CTkCheckBox(frame, text=str(opt), variable=var,
+                                 fg_color=DROPDOWN_BG, hover_color=DROPDOWN_BG_HOVER,
+                                 text_color=DROPDOWN_TEXT,
+                                 command=lambda o=opt: self._on_toggle(o))
+            cb.pack(anchor="w", fill="x", padx=10, pady=4)
+
+        btn_row = ctk.CTkFrame(popup, fg_color="transparent")
+        btn_row.pack(fill="x", padx=4, pady=(2, 6))
+        ctk.CTkButton(btn_row, text="Rensa", width=64, height=24,
+                      fg_color=DROPDOWN_BG, hover_color=DROPDOWN_BG_HOVER,
+                      text_color=DROPDOWN_TEXT,
+                      command=self._clear).pack(side="left", padx=6)
+        ctk.CTkButton(btn_row, text="Klar", width=64, height=24,
+                      fg_color=DROPDOWN_BG, hover_color=DROPDOWN_BG_HOVER,
+                      text_color=DROPDOWN_TEXT,
+                      command=self._close_popup).pack(side="right", padx=6)
+
+        popup.bind("<ButtonPress-1>", self._on_popup_press)
+        popup.bind("<Escape>", lambda e: self._close_popup())
+        popup.lift()
+        try:
+            popup.grab_set()
+        except Exception:
+            pass
+
+    def _on_toggle(self, opt):
+        if self._vars[opt].get():
+            self._selected.add(opt)
+        else:
+            self._selected.discard(opt)
+        self._update_text()
+        if self._callback:
+            self._callback()
+
+    def _clear(self):
+        self._selected.clear()
+        for var in self._vars.values():
+            var.set(False)
+        self._update_text()
+        if self._callback:
+            self._callback()
+
+    def _on_popup_press(self, event):
+        if self._popup is None:
+            return
+        px = self._popup.winfo_rootx()
+        py = self._popup.winfo_rooty()
+        pw = self._popup.winfo_width()
+        ph = self._popup.winfo_height()
+        if not (px <= event.x_root <= px + pw and py <= event.y_root <= py + ph):
+            self._close_popup()
+
+    def _close_popup(self):
+        if self._popup is not None:
+            try:
+                self._popup.grab_release()
+            except Exception:
+                pass
+            self._popup.destroy()
+            self._popup = None
+        self._update_text()
 
 
 class APlayersGUI:
@@ -135,16 +292,7 @@ class APlayersGUI:
 
         # --- Filters + info fields, grouped into sections ---
         saved_filters = APlayers.load_filters()
-        self._sel_vars = {
-            "responsible": tk.StringVar(value=saved_filters.get("responsible", "All")),
-            "liga": tk.StringVar(value=saved_filters.get("liga", "All")),
-            "year": tk.StringVar(value=saved_filters.get("year", "All")),
-            "country": tk.StringVar(value=saved_filters.get("country", "All")),
-            "section": tk.StringVar(value=saved_filters.get("section", "All")),
-            "position": tk.StringVar(value=saved_filters.get("position", "All")),
-            "age": tk.StringVar(value=saved_filters.get("age", "All")),
-        }
-        self._sel_combos = {}
+        self._sel_dropdowns = {}
         self._info_vars = {}
 
         # --- Section: Ligor & Matcher ---
@@ -159,11 +307,10 @@ class APlayersGUI:
         for i, (key, text) in enumerate(filters):
             tk.Label(lm_frame, text=text, font=("", 9), anchor="e").grid(
                 row=0, column=i * 2, padx=(0 if i == 0 else 12, 4), sticky="ew")
-            combo = ttk.Combobox(lm_frame, textvariable=self._sel_vars[key], width=18,
-                                 state="readonly", values=["All"])
-            combo.grid(row=0, column=i * 2 + 1, sticky="ew")
-            combo.bind("<<ComboboxSelected>>", self._on_filter_change)
-            self._sel_combos[key] = combo
+            dd = MultiSelectDropdown(lm_frame, callback=self._on_filter_change, width=DROPDOWN_WIDTH)
+            dd.set_selected(saved_filters.get(key, []))
+            dd.btn.grid(row=0, column=i * 2 + 1, sticky="ew")
+            self._sel_dropdowns[key] = dd
 
         info_items = [("leagues", "Ligor"), ("matches", "Matcher"), ("lineups", "Lineups")]
         for i, (key, text) in enumerate(info_items):
@@ -172,7 +319,7 @@ class APlayersGUI:
             var = tk.StringVar(value="-")
             self._info_vars[key] = var
             ent = tk.Entry(lm_frame, textvariable=var, font=("", 9), width=18,
-                           state="readonly", relief="solid", bd=1)
+                           state="readonly", relief="solid", bd=1, readonlybackground="white")
             ent.grid(row=1, column=i * 2 + 1, pady=(4, 0), sticky="ew")
 
         # --- Section: Spelare ---
@@ -187,18 +334,17 @@ class APlayersGUI:
         for i, (key, text) in enumerate(player_filters):
             tk.Label(sp_frame, text=text, font=("", 9), anchor="e").grid(
                 row=0, column=i * 2, padx=(0 if i == 0 else 12, 4), sticky="ew")
-            combo = ttk.Combobox(sp_frame, textvariable=self._sel_vars[key], width=18,
-                                 state="readonly", values=["All"])
-            combo.grid(row=0, column=i * 2 + 1, sticky="ew")
-            combo.bind("<<ComboboxSelected>>", self._on_filter_change)
-            self._sel_combos[key] = combo
+            dd = MultiSelectDropdown(sp_frame, callback=self._on_filter_change, width=DROPDOWN_WIDTH)
+            dd.set_selected(saved_filters.get(key, []))
+            dd.btn.grid(row=0, column=i * 2 + 1, sticky="ew")
+            self._sel_dropdowns[key] = dd
 
         tk.Label(sp_frame, text="Spelare", font=("", 9), anchor="e").grid(
             row=1, column=0, padx=(0, 4), pady=(4, 0), sticky="ew")
         var = tk.StringVar(value="-")
         self._info_vars["lineup_players"] = var
         ent = tk.Entry(sp_frame, textvariable=var, font=("", 9), width=18,
-                       state="readonly", relief="solid", bd=1)
+                       state="readonly", relief="solid", bd=1, readonlybackground="white")
         ent.grid(row=1, column=1, pady=(4, 0), sticky="ew")
 
         tk.Label(sp_frame, text="Rader", font=("", 9), anchor="e").grid(
@@ -206,7 +352,7 @@ class APlayersGUI:
         var = tk.StringVar(value="-")
         self._info_vars["rows"] = var
         ent = tk.Entry(sp_frame, textvariable=var, font=("", 9), width=18,
-                       state="readonly", relief="solid", bd=1)
+                       state="readonly", relief="solid", bd=1, readonlybackground="white")
         ent.grid(row=1, column=3, pady=(4, 0), sticky="ew")
 
         # --- Section: Spelare totalt ---
@@ -215,12 +361,12 @@ class APlayersGUI:
         tot_frame.columnconfigure(0, uniform="lbl")
         tot_frame.columnconfigure(1, uniform="box")
 
-        tk.Label(tot_frame, text="Spelare totalt", font=("", 9), anchor="e").grid(
+        tk.Label(tot_frame, text="Spelare", font=("", 9), anchor="e").grid(
             row=0, column=0, padx=(0, 4), sticky="ew")
         var = tk.StringVar(value="-")
         self._info_vars["players"] = var
         ent = tk.Entry(tot_frame, textvariable=var, font=("", 9), width=18,
-                       state="readonly", relief="solid", bd=1)
+                       state="readonly", relief="solid", bd=1, readonlybackground="white")
         ent.grid(row=0, column=1, sticky="ew")
 
         self._refresh_dropdowns()
@@ -474,9 +620,9 @@ class APlayersGUI:
 
     def _current_filter(self):
         sel = {}
-        for key, var in self._sel_vars.items():
-            val = var.get()
-            sel[key] = None if val == "All" else val
+        for key, dd in self._sel_dropdowns.items():
+            vals = dd.get_selected()
+            sel[key] = vals if vals else None
         return sel
 
     def _on_filter_change(self, event=None):
@@ -486,11 +632,11 @@ class APlayersGUI:
         self._reload_lista()
 
     def _save_filters(self):
-        APlayers.save_filters({key: var.get() for key, var in self._sel_vars.items()})
+        APlayers.save_filters({key: dd.get_selected() for key, dd in self._sel_dropdowns.items()})
 
     def _reset_filters(self):
-        for key, var in self._sel_vars.items():
-            var.set("All")
+        for dd in self._sel_dropdowns.values():
+            dd.set_selected([])
         self._refresh_dropdowns()
         self._update_counts()
         self._save_filters()
@@ -631,16 +777,12 @@ class APlayersGUI:
             for other in fields:
                 if other == key:
                     continue
-                val = self._sel_vars[other].get()
-                sel[other] = None if val == "All" else val
+                vals = self._sel_dropdowns[other].get_selected()
+                sel[other] = vals if vals else None
             matches = APlayers.filter_ligor(active, sel)
             attr = attr_map[key]
             values = sorted({l.get(attr, "") for l in matches if l.get(attr)})
-            combo = self._sel_combos[key]
-            combo["values"] = ["All"] + values
-            current = self._sel_vars[key].get()
-            if current != "All" and current not in values:
-                self._sel_vars[key].set("All")
+            self._sel_dropdowns[key].set_options(values)
 
         self._refresh_player_dropdowns()
 
@@ -660,9 +802,7 @@ class APlayersGUI:
 
     def _refresh_player_dropdowns(self):
         sections = ["Starting Line-up", "Substitutes", "Manager"]
-        self._sel_combos["section"]["values"] = ["All"] + sections
-        if self._sel_vars["section"].get() != "All" and self._sel_vars["section"].get() not in sections:
-            self._sel_vars["section"].set("All")
+        self._sel_dropdowns["section"].set_options(sections)
 
         base = self._current_filter()
 
@@ -670,18 +810,14 @@ class APlayersGUI:
         pos_sel["position"] = None
         pos_sel["age"] = None
         positions = sorted({p[5] for p in self._matching_rows(pos_sel) if p[5] and p[5] != "Manager"})
-        self._sel_combos["position"]["values"] = ["All"] + positions
-        if self._sel_vars["position"].get() != "All" and self._sel_vars["position"].get() not in positions:
-            self._sel_vars["position"].set("All")
+        self._sel_dropdowns["position"].set_options(positions)
 
         base = self._current_filter()
         age_sel = dict(base)
         age_sel["age"] = None
         ages = sorted({p[7] for p in self._matching_rows(age_sel) if p[7]},
                       key=lambda a: int(a) if a.isdigit() else 0)
-        self._sel_combos["age"]["values"] = ["All"] + ages
-        if self._sel_vars["age"].get() != "All" and self._sel_vars["age"].get() not in ages:
-            self._sel_vars["age"].set("All")
+        self._sel_dropdowns["age"].set_options(ages)
 
     def _update_counts(self):
         data = APlayers.load_data()
