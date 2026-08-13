@@ -511,15 +511,17 @@ class APlayersGUI:
         self.prog_canvas.coords(self.prog_bar_fg, 0, 0, fill_w, 26)
         self.prog_canvas.coords(self.prog_bar_bg, 0, 0, w, 26)
 
-        if current > 0 and self._task_start:
-            elapsed = time.time() - self._task_start
-            eta = (elapsed / current) * (total - current)
-            total_est = elapsed + eta
-            timing = f"  {self._fmt_time(elapsed)} / {self._fmt_time(total_est)}"
+        if current > 0:
+            if self._task_start:
+                elapsed = time.time() - self._task_start
+                eta = (elapsed / current) * (total - current)
+                total_est = elapsed + eta
+                timing = f"  {self._fmt_time(elapsed)} / {self._fmt_time(total_est)}"
+            else:
+                timing = ""
+            label_text = f"{current} / {total}  ({int(frac * 100)}%){timing}"
         else:
-            timing = ""
-
-        label_text = f"{current} / {total}  ({int(frac * 100)}%){timing}"
+            label_text = ""
         self.prog_canvas.itemconfig(self.prog_text, text=label_text)
         if text:
             self.prog_label.config(text=text)
@@ -760,11 +762,24 @@ class APlayersGUI:
     def _show_dialog(self, dlg, modal=False):
         dlg.transient(self.root)
         dlg.lift()
+        try:
+            dlg.attributes("-topmost", True)
+        except Exception:
+            pass
         if modal:
             dlg.grab_set()
             dlg.focus_force()
         else:
-            dlg.focus_set()
+            dlg.focus_force()
+            dlg.after(150, lambda: self._release_topmost(dlg))
+
+    @staticmethod
+    def _release_topmost(dlg):
+        try:
+            if dlg.winfo_exists():
+                dlg.attributes("-topmost", False)
+        except Exception:
+            pass
 
     def _refresh_dropdowns(self):
         ligor = APlayers.load_ligor()
@@ -1515,44 +1530,44 @@ class APlayersGUI:
 
     # --- Worker: Export excel ---
     def start_export_excel(self):
-        self._set_buttons(True)
-        _abort_event.clear()
-        t = threading.Thread(target=self._run_export_excel, daemon=True)
-        t.start()
+        data = APlayers.load_data()
+        active_ids = self._get_active_ids()
+        sel = self._current_filter()
+        success_count = sum(
+            1 for lid, league in data.get("Leagues", {}).items()
+            if APlayers.match_filter_league(league, active_ids, sel)
+            for gid, game in league.get("Games", {}).items() if game.get("Status") == "success"
+        )
+        if success_count == 0:
+            APlayers.log("Inga hämtade matcher att exportera.", "Y")
+            return
 
-    def _run_export_excel(self):
-        try:
-            data = APlayers.load_data()
-            active_ids = self._get_active_ids()
-            sel = self._current_filter()
-            success_count = sum(
-                1 for lid, league in data.get("Leagues", {}).items()
-                if APlayers.match_filter_league(league, active_ids, sel)
-                for gid, game in league.get("Games", {}).items() if game.get("Status") == "success"
-            )
-            if success_count == 0:
-                APlayers.log("Inga hämtade matcher att exportera.", "Y")
-                return
+        now = datetime.now()
+        default_name = f"Output {now.strftime('%Y-%m-%d')}.xlsx"
+        filepath = filedialog.asksaveasfilename(
+            parent=self.root,
+            title="Save Excel",
+            initialfile=default_name,
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")]
+        )
 
-            now = datetime.now()
-            default_name = f"Output {now.strftime('%Y-%m-%d')}.xlsx"
-            filepath = filedialog.asksaveasfilename(
-                parent=self.root,
-                title="Save Excel",
-                initialfile=default_name,
-                defaultextension=".xlsx",
-                filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")]
-            )
+        if not filepath:
+            APlayers.log("Excel-export avbruten.", "Y")
+            return
 
-            if not filepath:
+        if os.path.exists(filepath):
+            if not messagebox.askyesno("Skriv över?", f"'{os.path.basename(filepath)}' finns redan.\nSkriv över?", parent=self.root):
                 APlayers.log("Excel-export avbruten.", "Y")
                 return
 
-            if os.path.exists(filepath):
-                if not messagebox.askyesno("Skriv över?", f"'{os.path.basename(filepath)}' finns redan.\nSkriv över?", parent=self.root):
-                    APlayers.log("Excel-export avbruten.", "Y")
-                    return
+        self._set_buttons(True)
+        _abort_event.clear()
+        t = threading.Thread(target=self._run_export_excel, args=(data, active_ids, sel, filepath), daemon=True)
+        t.start()
 
+    def _run_export_excel(self, data, active_ids, sel, filepath):
+        try:
             written = APlayers.export_excel(
                 data, filepath, active_ids=active_ids, sel=sel,
                 columns=APlayers.visible_columns(self._columns, "excel")
