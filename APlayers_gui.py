@@ -90,7 +90,7 @@ class MultiSelectDropdown:
         self._update_text()
 
     def set_selected(self, values):
-        self._selected = set(values) & set(self._options)
+        self._selected = set(values)
         self._update_text()
 
     def get_selected(self):
