@@ -185,4 +185,8 @@ cython_debug/
 Logs/
 Matcher.json
 Matcher.old.json
+Data.json
 Settings.ini
+Ligor.txt
+APlayers.pid
+Backup/

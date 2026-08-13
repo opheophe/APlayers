@@ -7,6 +7,7 @@ import threading
 import subprocess
 import tkinter as tk
 from tkinter import ttk, scrolledtext, filedialog, messagebox
+from tkinter import font as tkfont
 from datetime import datetime
 
 try:
@@ -58,15 +59,15 @@ COLOR_MAP = {
     "BW": "#ffffff",
 }
 
-CSV_HEADER = APlayers.CSV_HEADER
-
 
 class APlayersGUI:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("APlayers")
-        self.root.geometry("900x650")
+        win_w, win_h = APlayers.load_window_size()
+        self.root.geometry(f"{win_w}x{win_h}")
         self.root.minsize(700, 500)
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         if os.path.exists(ICON_PATH):
             self.root.iconbitmap(ICON_PATH)
         self._running = False
@@ -74,13 +75,22 @@ class APlayersGUI:
         self._last_current = 0
         self._last_total = 1
 
+        self._columns = APlayers.load_columns()
+        self._lista_generation = 0
+        self._lista_columns = []
+        self._lista_rows = []
+        self._lista_sort_col = None
+        self._lista_sort_reverse = False
+        self._lista_queue = queue.Queue()
+        self._lista_url_by_iid = {}
+
         # --- Menu bar ---
         menubar = tk.Menu(self.root)
         self.root.config(menu=menubar)
 
         files_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Filer", menu=files_menu)
-        files_menu.add_command(label="Ligor.txt", command=self._open_ligor)
+        files_menu.add_command(label="Öppna mapp", command=self._open_app_folder)
         files_menu.add_separator()
         files_menu.add_command(label="Ta bort matcher", command=self._delete_matcher)
 
@@ -88,6 +98,10 @@ class APlayersGUI:
         menubar.add_cascade(label="Visa", menu=view_menu)
         view_menu.add_command(label="Matcher i kö", command=self._view_pending)
         view_menu.add_command(label="Ligastatistik", command=self._view_stats)
+
+        ligor_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Ligor", menu=ligor_menu)
+        ligor_menu.add_command(label="Hantera ligor", command=self._manage_ligor)
 
         settings_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Inställningar", menu=settings_menu)
@@ -98,15 +112,12 @@ class APlayersGUI:
         settings_menu.add_checkbutton(label="Hämta spelare på nytt", variable=self._refetch_players_var,
                                       command=self._toggle_refetch_players)
         settings_menu.add_separator()
-
-        self._inc_managers_var = tk.BooleanVar(value=APlayers.INCLUDE_MANAGERS)
-        settings_menu.add_checkbutton(label="Inkludera managers", variable=self._inc_managers_var,
-                                      command=self._toggle_include_managers)
-        self._inc_substitutes_var = tk.BooleanVar(value=APlayers.INCLUDE_SUBSTITUTES)
-        settings_menu.add_checkbutton(label="Inkludera avbytare", variable=self._inc_substitutes_var,
-                                      command=self._toggle_include_substitutes)
-        settings_menu.add_separator()
         settings_menu.add_command(label="Event labels...", command=self._settings_event_labels)
+        settings_menu.add_command(label="Kolumner...", command=self._settings_columns)
+
+        about_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Om", menu=about_menu)
+        about_menu.add_command(label="Github", command=self._about_github)
 
         # --- Progress bar area ---
         prog_frame = tk.Frame(self.root, height=60)
@@ -122,38 +133,117 @@ class APlayersGUI:
         self.prog_bar_fg = self.prog_canvas.create_rectangle(0, 0, 0, 26, fill="#009999", outline="")
         self.prog_text = self.prog_canvas.create_text(450, 13, text="", fill="#fff", font=("", 9, "bold"))
 
-        # --- Info labels ---
-        info_frame = tk.Frame(self.root)
-        info_frame.pack(fill=tk.X, padx=10, pady=(6, 0))
+        # --- Filters + info fields, grouped into sections ---
+        saved_filters = APlayers.load_filters()
+        self._sel_vars = {
+            "responsible": tk.StringVar(value=saved_filters.get("responsible", "All")),
+            "liga": tk.StringVar(value=saved_filters.get("liga", "All")),
+            "year": tk.StringVar(value=saved_filters.get("year", "All")),
+            "country": tk.StringVar(value=saved_filters.get("country", "All")),
+            "section": tk.StringVar(value=saved_filters.get("section", "All")),
+            "position": tk.StringVar(value=saved_filters.get("position", "All")),
+            "age": tk.StringVar(value=saved_filters.get("age", "All")),
+        }
+        self._sel_combos = {}
+        self._info_vars = {}
 
-        self.lbl_leagues = tk.Label(info_frame, text="Ligor: -", font=("", 9))
-        self.lbl_leagues.pack(side=tk.LEFT, padx=(0, 20))
-        self.lbl_matches = tk.Label(info_frame, text="Matcher: -", font=("", 9))
-        self.lbl_matches.pack(side=tk.LEFT, padx=(0, 20))
-        self.lbl_lineups = tk.Label(info_frame, text="Lineups: -", font=("", 9))
-        self.lbl_lineups.pack(side=tk.LEFT, padx=(0, 20))
-        self.lbl_players = tk.Label(info_frame, text="Spelare: -", font=("", 9))
-        self.lbl_players.pack(side=tk.LEFT)
+        # --- Section: Ligor & Matcher ---
+        lm_frame = tk.LabelFrame(self.root, text="Ligor & Matcher", padx=8, pady=4)
+        lm_frame.pack(fill=tk.X, padx=10, pady=(6, 0))
+        for col in (1, 3, 5, 7):
+            lm_frame.columnconfigure(col, uniform="box")
+        for col in (0, 2, 4, 6):
+            lm_frame.columnconfigure(col, uniform="lbl")
+
+        filters = [("responsible", "Ansvarig"), ("liga", "Liga"), ("year", "År"), ("country", "Land")]
+        for i, (key, text) in enumerate(filters):
+            tk.Label(lm_frame, text=text, font=("", 9), anchor="e").grid(
+                row=0, column=i * 2, padx=(0 if i == 0 else 12, 4), sticky="ew")
+            combo = ttk.Combobox(lm_frame, textvariable=self._sel_vars[key], width=18,
+                                 state="readonly", values=["All"])
+            combo.grid(row=0, column=i * 2 + 1, sticky="ew")
+            combo.bind("<<ComboboxSelected>>", self._on_filter_change)
+            self._sel_combos[key] = combo
+
+        info_items = [("leagues", "Ligor"), ("matches", "Matcher"), ("lineups", "Lineups")]
+        for i, (key, text) in enumerate(info_items):
+            tk.Label(lm_frame, text=text, font=("", 9), anchor="e").grid(
+                row=1, column=i * 2, padx=(0 if i == 0 else 12, 4), pady=(4, 0), sticky="ew")
+            var = tk.StringVar(value="-")
+            self._info_vars[key] = var
+            ent = tk.Entry(lm_frame, textvariable=var, font=("", 9), width=18,
+                           state="readonly", relief="solid", bd=1)
+            ent.grid(row=1, column=i * 2 + 1, pady=(4, 0), sticky="ew")
+
+        # --- Section: Spelare ---
+        sp_frame = tk.LabelFrame(self.root, text="Spelare", padx=8, pady=4)
+        sp_frame.pack(fill=tk.X, padx=10, pady=(6, 0))
+        for col in (1, 3, 5):
+            sp_frame.columnconfigure(col, uniform="box")
+        for col in (0, 2, 4):
+            sp_frame.columnconfigure(col, uniform="lbl")
+
+        player_filters = [("section", "Lineup"), ("position", "Position"), ("age", "Ålder")]
+        for i, (key, text) in enumerate(player_filters):
+            tk.Label(sp_frame, text=text, font=("", 9), anchor="e").grid(
+                row=0, column=i * 2, padx=(0 if i == 0 else 12, 4), sticky="ew")
+            combo = ttk.Combobox(sp_frame, textvariable=self._sel_vars[key], width=18,
+                                 state="readonly", values=["All"])
+            combo.grid(row=0, column=i * 2 + 1, sticky="ew")
+            combo.bind("<<ComboboxSelected>>", self._on_filter_change)
+            self._sel_combos[key] = combo
+
+        tk.Label(sp_frame, text="Spelare", font=("", 9), anchor="e").grid(
+            row=1, column=0, padx=(0, 4), pady=(4, 0), sticky="ew")
+        var = tk.StringVar(value="-")
+        self._info_vars["lineup_players"] = var
+        ent = tk.Entry(sp_frame, textvariable=var, font=("", 9), width=18,
+                       state="readonly", relief="solid", bd=1)
+        ent.grid(row=1, column=1, pady=(4, 0), sticky="ew")
+
+        tk.Label(sp_frame, text="Rader", font=("", 9), anchor="e").grid(
+            row=1, column=2, padx=(12, 4), pady=(4, 0), sticky="ew")
+        var = tk.StringVar(value="-")
+        self._info_vars["rows"] = var
+        ent = tk.Entry(sp_frame, textvariable=var, font=("", 9), width=18,
+                       state="readonly", relief="solid", bd=1)
+        ent.grid(row=1, column=3, pady=(4, 0), sticky="ew")
+
+        # --- Section: Spelare totalt ---
+        tot_frame = tk.LabelFrame(self.root, text="Spelare totalt", padx=8, pady=4)
+        tot_frame.pack(fill=tk.X, padx=10, pady=(6, 0))
+        tot_frame.columnconfigure(0, uniform="lbl")
+        tot_frame.columnconfigure(1, uniform="box")
+
+        tk.Label(tot_frame, text="Spelare totalt", font=("", 9), anchor="e").grid(
+            row=0, column=0, padx=(0, 4), sticky="ew")
+        var = tk.StringVar(value="-")
+        self._info_vars["players"] = var
+        ent = tk.Entry(tot_frame, textvariable=var, font=("", 9), width=18,
+                       state="readonly", relief="solid", bd=1)
+        ent.grid(row=0, column=1, sticky="ew")
+
+        self._refresh_dropdowns()
 
         # --- Buttons ---
         btn_frame = tk.Frame(self.root)
         btn_frame.pack(fill=tk.X, padx=10, pady=8)
 
-        self.btn_ligor = tk.Button(btn_frame, text="Hämta ligor", command=self.start_hamta_ligor,
+        self.btn_reset = tk.Button(btn_frame, text="Nollställ filter", command=self._reset_filters,
+                                   padx=14, pady=4, font=("", 9))
+        self.btn_reset.pack(side=tk.LEFT, padx=4)
+
+        self.btn_ligor = tk.Button(btn_frame, text="Hämta matcher", command=self.start_hamta_ligor,
                                    padx=14, pady=4, font=("", 9, "bold"))
         self.btn_ligor.pack(side=tk.LEFT, padx=4)
 
-        self.btn_matcher = tk.Button(btn_frame, text="Hämta matcher", command=self.start_hamta_matcher,
+        self.btn_matcher = tk.Button(btn_frame, text="Hämta lineups", command=self.start_hamta_matcher,
                                      padx=14, pady=4, font=("", 9, "bold"))
         self.btn_matcher.pack(side=tk.LEFT, padx=4)
 
         self.btn_spelare = tk.Button(btn_frame, text="Hämta spelare", command=self.start_hamta_spelare,
                                      padx=14, pady=4, font=("", 9, "bold"))
         self.btn_spelare.pack(side=tk.LEFT, padx=4)
-
-        self.btn_csv = tk.Button(btn_frame, text="Hämta CSV", command=self.start_hamta_csv,
-                                 padx=14, pady=4, font=("", 9, "bold"))
-        self.btn_csv.pack(side=tk.LEFT, padx=4)
 
         self.btn_excel = tk.Button(btn_frame, text="Export excel", command=self.start_export_excel,
                                    padx=14, pady=4, font=("", 9, "bold"))
@@ -164,12 +254,39 @@ class APlayersGUI:
                                    state=tk.DISABLED)
         self.btn_abort.pack(side=tk.LEFT, padx=4)
 
-        # --- Console ---
-        console_frame = tk.Frame(self.root)
-        console_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(4, 10))
+        # --- Tabs: Lista + Konsol ---
+        tab_frame = tk.Frame(self.root)
+        tab_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(4, 10))
+
+        self.notebook = ttk.Notebook(tab_frame)
+        self.notebook.pack(fill=tk.BOTH, expand=True)
+
+        # --- Lista tab ---
+        lista_tab = tk.Frame(self.notebook)
+        self.notebook.add(lista_tab, text="Lista")
+
+        lista_container = tk.Frame(lista_tab)
+        lista_container.pack(fill=tk.BOTH, expand=True)
+
+        self.lista_tree = ttk.Treeview(lista_container, columns=(), show="headings")
+        vsb = ttk.Scrollbar(lista_container, orient="vertical", command=self.lista_tree.yview)
+        hsb = ttk.Scrollbar(lista_container, orient="horizontal", command=self.lista_tree.xview)
+        self.lista_tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        hsb.pack(side=tk.BOTTOM, fill=tk.X)
+        self.lista_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self._lista_style = ttk.Style()
+        self._lista_style.configure("Grey.Treeview", background="#cccccc", fieldbackground="#cccccc")
+        self.lista_tree.bind("<Button-1>", self._on_lista_header_click)
+        self.lista_tree.bind("<Button-1>", self._on_lista_cell_click, add="+")
+
+        # --- Konsol tab ---
+        console_tab = tk.Frame(self.notebook)
+        self.notebook.add(console_tab, text="Konsol")
 
         self.console = scrolledtext.ScrolledText(
-            console_frame, bg="#1a1a1a", fg="#cccccc",
+            console_tab, bg="#1a1a1a", fg="#cccccc",
             insertbackground="white", font=("Consolas", 9), wrap=tk.WORD,
             state=tk.DISABLED
         )
@@ -187,6 +304,7 @@ class APlayersGUI:
 
         # Start queue poller
         self._poll_queue()
+        self._poll_lista()
 
     # --- Console / Progress helpers ---
     def log_console(self, msg, color=None):
@@ -285,20 +403,58 @@ class APlayersGUI:
             self.set_progress(self._last_current, self._last_total)
         self.root.after(250, self._poll_queue)
 
-    def _open_ligor(self):
-        os.startfile(APlayers.LIGOR_PATH)
+    def _open_app_folder(self):
+        if sys.platform == "win32":
+            os.startfile(SCRIPT_DIR)
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", SCRIPT_DIR])
+        else:
+            subprocess.Popen(["xdg-open", SCRIPT_DIR])
+
+    def _open_url(self, url):
+        if sys.platform == "win32":
+            os.startfile(url)
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", url])
+        else:
+            subprocess.Popen(["xdg-open", url])
+
+    def _about_github(self):
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Github")
+        dlg.resizable(False, False)
+        self._show_dialog(dlg, modal=True)
+        if os.path.exists(ICON_PATH):
+            dlg.iconbitmap(ICON_PATH)
+
+        url = "https://github.com/opheophe/APlayers"
+        frm = tk.Frame(dlg, padx=20, pady=16)
+        frm.pack()
+        tk.Label(frm, text="APlayers", font=("", 11, "bold")).pack(pady=(0, 8))
+        link = tk.Label(frm, text=url, fg="#33ccff", cursor="hand2", font=("", 9, "underline"))
+        link.pack()
+        link.bind("<Button-1>", lambda e: self._open_url(url))
+        tk.Button(frm, text="Stäng", command=dlg.destroy, padx=16, pady=4, font=("", 9)).pack(pady=(12, 0))
+
+        dlg.update_idletasks()
+        w = dlg.winfo_width()
+        h = dlg.winfo_height()
+        x = self.root.winfo_x() + (self.root.winfo_width() - w) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - h) // 2
+        dlg.geometry(f"+{x}+{y}")
 
     def _delete_matcher(self):
-        if not messagebox.askyesno("Bekräfta", "Är du säker på att du vill ta bort alla matcher?\n\nDetta raderar Matcher.json."):
+        if not messagebox.askyesno("Bekräfta", "Är du säker på att du vill ta bort alla matcher?\n\nDetta raderar Data.json.", parent=self.root):
             return
         try:
-            os.remove(APlayers.MATCHER_FILE)
-            APlayers.log("Matcher.json borttagen.", "BG")
+            os.remove(APlayers.DATA_FILE)
+            APlayers.log("Data.json borttagen.", "BG")
         except FileNotFoundError:
-            APlayers.log("Matcher.json finns inte.", "Y")
+            APlayers.log("Data.json finns inte.", "Y")
         except Exception as e:
             APlayers.log(f"Fel vid borttagning: {e}", "BR")
         self._update_counts()
+        self._reload_lista()
 
     def _open_link(self, event):
         idx = self.console.index(f"@{event.x},{event.y}")
@@ -307,30 +463,280 @@ class APlayersGUI:
                 os.startfile(url)
                 return
 
+    def _get_active_ids(self):
+        return {l["id"] for l in APlayers.load_ligor() if l.get("active")}
+
+    def _get_selected_ids(self):
+        ligor = APlayers.load_ligor()
+        sel = self._current_filter()
+        matching = APlayers.filter_ligor(ligor, sel)
+        return {l["id"] for l in matching if l.get("active")}
+
+    def _current_filter(self):
+        sel = {}
+        for key, var in self._sel_vars.items():
+            val = var.get()
+            sel[key] = None if val == "All" else val
+        return sel
+
+    def _on_filter_change(self, event=None):
+        self._refresh_dropdowns()
+        self._update_counts()
+        self._save_filters()
+        self._reload_lista()
+
+    def _save_filters(self):
+        APlayers.save_filters({key: var.get() for key, var in self._sel_vars.items()})
+
+    def _reset_filters(self):
+        for key, var in self._sel_vars.items():
+            var.set("All")
+        self._refresh_dropdowns()
+        self._update_counts()
+        self._save_filters()
+        self._reload_lista()
+
+    def _set_lista_loading(self, loading):
+        self.lista_tree.configure(style="Grey.Treeview" if loading else "")
+
+    def _reload_lista(self):
+        self._lista_generation += 1
+        gen = self._lista_generation
+        sel = self._current_filter()
+        active_ids = self._get_active_ids()
+        columns = APlayers.visible_columns(self._columns, "lista")
+        self._set_lista_loading(True)
+        t = threading.Thread(target=self._lista_worker, args=(gen, sel, active_ids, columns), daemon=True)
+        t.start()
+
+    def _lista_worker(self, gen, sel, active_ids, columns):
+        data = APlayers.load_data()
+        indices = [APlayers.COLUMN_KEYS.index(k) for k in columns]
+        rows = []
+        for full in APlayers.iter_export_rows(data, active_ids, sel):
+            if gen != self._lista_generation:
+                return
+            rows.append([full[i] for i in indices])
+        self._lista_queue.put((gen, columns, rows))
+
+    def _poll_lista(self):
+        try:
+            while True:
+                gen, columns, rows = self._lista_queue.get_nowait()
+                if gen == self._lista_generation:
+                    self._apply_lista(gen, columns, rows)
+        except queue.Empty:
+            pass
+        self.root.after(150, self._poll_lista)
+
+    def _apply_lista(self, gen, columns, rows):
+        if gen != self._lista_generation:
+            return
+        self._set_lista_loading(False)
+        self._lista_columns = columns
+        self._lista_rows = rows
+        self.lista_tree["columns"] = columns
+        for key in columns:
+            self.lista_tree.heading(key, text=APlayers.COLUMN_LABELS[key])
+            self.lista_tree.column(key, minwidth=20, stretch=False)
+        self._populate_lista()
+        self._autosize_lista_columns()
+
+    def _autosize_lista_columns(self):
+        font = tkfont.nametofont("TkDefaultFont")
+        for key in self._lista_columns:
+            idx = self._lista_columns.index(key)
+            max_w = font.measure(APlayers.COLUMN_LABELS[key]) + 24
+            for r in self._lista_rows:
+                v = r[idx]
+                text = "🔗" if (key == "url" and v) else str(v)
+                w = font.measure(text)
+                if w > max_w:
+                    max_w = w
+            self.lista_tree.column(key, width=max_w + 16, minwidth=20, stretch=False)
+
+    def _populate_lista(self):
+        tree = self.lista_tree
+        tree.delete(*tree.get_children())
+        rows = self._lista_rows
+        col = self._lista_sort_col
+        if col in self._lista_columns:
+            idx = self._lista_columns.index(col)
+
+            def key(r):
+                v = r[idx]
+                try:
+                    return (0, float(v))
+                except (ValueError, TypeError):
+                    return (1, str(v).lower())
+
+            rows = sorted(rows, key=key, reverse=self._lista_sort_reverse)
+        url_idx = self._lista_columns.index("url") if "url" in self._lista_columns else None
+        self._lista_url_by_iid = {}
+        for r in rows:
+            values = list(r)
+            url = ""
+            if url_idx is not None:
+                url = values[url_idx]
+                values[url_idx] = "🔗" if url else ""
+            iid = tree.insert("", "end", values=values)
+            if url:
+                self._lista_url_by_iid[iid] = url
+
+    def _on_lista_header_click(self, event):
+        if self.lista_tree.identify("region", event.x, event.y) != "heading":
+            return
+        col_id = self.lista_tree.identify_column(event.x)
+        idx = int(col_id[1:]) - 1
+        if idx < 0 or idx >= len(self._lista_columns):
+            return
+        key = self._lista_columns[idx]
+        if self._lista_sort_col == key:
+            self._lista_sort_reverse = not self._lista_sort_reverse
+        else:
+            self._lista_sort_col = key
+            self._lista_sort_reverse = False
+        self._populate_lista()
+
+    def _on_lista_cell_click(self, event):
+        if self.lista_tree.identify("region", event.x, event.y) != "cell":
+            return
+        row = self.lista_tree.identify_row(event.y)
+        col_id = self.lista_tree.identify_column(event.x)
+        idx = int(col_id[1:]) - 1
+        if not row or idx < 0 or idx >= len(self._lista_columns):
+            return
+        if self._lista_columns[idx] == "url":
+            url = self._lista_url_by_iid.get(row, "")
+            if url:
+                self._open_url(url)
+
+    def _show_dialog(self, dlg, modal=False):
+        dlg.transient(self.root)
+        dlg.lift()
+        if modal:
+            dlg.grab_set()
+            dlg.focus_force()
+        else:
+            dlg.focus_set()
+
+    def _refresh_dropdowns(self):
+        ligor = APlayers.load_ligor()
+        active = [l for l in ligor if l.get("active")]
+        fields = ("responsible", "liga", "year", "country")
+        attr_map = {"responsible": "responsible", "liga": "name",
+                    "year": "year", "country": "country"}
+        for key in fields:
+            sel = {}
+            for other in fields:
+                if other == key:
+                    continue
+                val = self._sel_vars[other].get()
+                sel[other] = None if val == "All" else val
+            matches = APlayers.filter_ligor(active, sel)
+            attr = attr_map[key]
+            values = sorted({l.get(attr, "") for l in matches if l.get(attr)})
+            combo = self._sel_combos[key]
+            combo["values"] = ["All"] + values
+            current = self._sel_vars[key].get()
+            if current != "All" and current not in values:
+                self._sel_vars[key].set("All")
+
+        self._refresh_player_dropdowns()
+
+    def _matching_rows(self, sel):
+        ligor = APlayers.load_ligor()
+        active_ids = {l["id"] for l in ligor if l.get("active")}
+        data = APlayers.load_data()
+        for lid, league in data.get("Leagues", {}).items():
+            if not APlayers.match_filter_league(league, active_ids, sel):
+                continue
+            for gid, game in league.get("Games", {}).items():
+                if game.get("Status") != "success":
+                    continue
+                for p in game.get("Lineup", []):
+                    if len(p) >= 10 and APlayers.match_filter_player(p, sel):
+                        yield p
+
+    def _refresh_player_dropdowns(self):
+        sections = ["Starting Line-up", "Substitutes", "Manager"]
+        self._sel_combos["section"]["values"] = ["All"] + sections
+        if self._sel_vars["section"].get() != "All" and self._sel_vars["section"].get() not in sections:
+            self._sel_vars["section"].set("All")
+
+        base = self._current_filter()
+
+        pos_sel = dict(base)
+        pos_sel["position"] = None
+        pos_sel["age"] = None
+        positions = sorted({p[5] for p in self._matching_rows(pos_sel) if p[5] and p[5] != "Manager"})
+        self._sel_combos["position"]["values"] = ["All"] + positions
+        if self._sel_vars["position"].get() != "All" and self._sel_vars["position"].get() not in positions:
+            self._sel_vars["position"].set("All")
+
+        base = self._current_filter()
+        age_sel = dict(base)
+        age_sel["age"] = None
+        ages = sorted({p[7] for p in self._matching_rows(age_sel) if p[7]},
+                      key=lambda a: int(a) if a.isdigit() else 0)
+        self._sel_combos["age"]["values"] = ["All"] + ages
+        if self._sel_vars["age"].get() != "All" and self._sel_vars["age"].get() not in ages:
+            self._sel_vars["age"].set("All")
+
     def _update_counts(self):
-        matcher = APlayers.load_matcher()
-        leagues = APlayers.load_leagues()
-        total = len(matcher["matches"])
-        pending = sum(1 for m in matcher["matches"] if m["status"] == "pending")
-        success = sum(1 for m in matcher["matches"] if m["status"] == "success")
-        players = matcher.get("players", [])
-        detailed = sum(1 for p in players if p.get("detailed"))
-        self.lbl_leagues.config(text=f"Ligor: {len(leagues)}")
-        self.lbl_matches.config(text=f"Matcher: {total} totalt, {pending} i kö")
-        self.lbl_lineups.config(text=f"Lineups: {success} hämtade")
-        self.lbl_players.config(text=f"Spelare: {len(players)} totalt, {detailed} detaljer")
+        data = APlayers.load_data()
+        ligor = APlayers.load_ligor()
+        sel = self._current_filter()
+        matching = APlayers.filter_ligor(ligor, sel)
+        total_ligor = len(matching)
+        active_ligor = sum(1 for l in matching if l.get("active"))
+        active_ids = {l["id"] for l in matching if l.get("active")}
+
+        total = 0
+        pending = 0
+        success = 0
+        for lid, league in data.get("Leagues", {}).items():
+            if league.get("Id") not in active_ids:
+                continue
+            for gid, game in league.get("Games", {}).items():
+                total += 1
+                status = game.get("Status")
+                if status == "pending":
+                    pending += 1
+                elif status == "success":
+                    success += 1
+
+        lineup_entries = 0
+        distinct_players = set()
+        for p in self._matching_rows(sel):
+            lineup_entries += 1
+            if len(p) >= 10 and p[4]:
+                distinct_players.add(p[4])
+
+        players = data.get("Players", {})
+        detailed = sum(1 for p in players.values() if p.get("Detailed"))
+        self._info_vars["leagues"].set(f"{active_ligor}/{total_ligor} aktiva")
+        self._info_vars["matches"].set(f"{total} (i kö: {pending})")
+        self._info_vars["lineups"].set(f"{success} hämtade")
+        self._info_vars["lineup_players"].set(f"{len(distinct_players)}")
+        self._info_vars["rows"].set(f"{lineup_entries}")
+        self._info_vars["players"].set(f"{len(players)} (i kö: {len(players) - detailed})")
 
     def _view_pending(self):
-        matcher = APlayers.load_matcher()
-        pending = [m for m in matcher["matches"] if m["status"] == "pending"]
+        data = APlayers.load_data()
+        pending = []
+        for lid, league in data.get("Leagues", {}).items():
+            for gid, game in league.get("Games", {}).items():
+                if game.get("Status") == "pending":
+                    pending.append((league.get("Name", "?"), game.get("Url", "")))
         if not pending:
-            messagebox.showinfo("Matcher i kö", "Inga matcher i kö.")
+            messagebox.showinfo("Matcher i kö", "Inga matcher i kö.", parent=self.root)
             return
 
         dlg = tk.Toplevel(self.root)
         dlg.title(f"Matcher i kö ({len(pending)})")
         dlg.geometry("750x400")
-        dlg.transient(self.root)
+        self._show_dialog(dlg)
         if os.path.exists(ICON_PATH):
             dlg.iconbitmap(ICON_PATH)
 
@@ -338,34 +744,32 @@ class APlayersGUI:
                                          font=("Consolas", 9), wrap=tk.WORD)
         text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         text.tag_config("link", foreground="#33ccff", underline=True)
-        text.insert(tk.END, f"{'Land':<25} {'URL'}\n")
+        text.insert(tk.END, f"{'Liga':<25} {'URL'}\n")
         text.insert(tk.END, "-" * 70 + "\n")
-        for m in pending:
-            country = m["country"]
-            url = m["url"]
-            lineup_url = url.replace("/index/", "/aufstellung/")
-            text.insert(tk.END, f"{country:<25} ")
+        for name, url in pending:
+            text.insert(tk.END, f"{name:<25} ")
             text.insert(tk.END, url, "link")
             text.insert(tk.END, "\n")
         text.config(state=tk.DISABLED)
 
     def _view_stats(self):
-        matcher = APlayers.load_matcher()
+        data = APlayers.load_data()
         stats = {}
-        for m in matcher["matches"]:
-            country = m["country"]
-            if country not in stats:
-                stats[country] = {"total": 0, "pending": 0, "success": 0}
-            stats[country]["total"] += 1
-            if m["status"] == "pending":
-                stats[country]["pending"] += 1
-            elif m["status"] == "success":
-                stats[country]["success"] += 1
+        for lid, league in data.get("Leagues", {}).items():
+            name = league.get("Name", "?")
+            if name not in stats:
+                stats[name] = {"total": 0, "pending": 0, "success": 0}
+            for gid, game in league.get("Games", {}).items():
+                stats[name]["total"] += 1
+                if game.get("Status") == "pending":
+                    stats[name]["pending"] += 1
+                elif game.get("Status") == "success":
+                    stats[name]["success"] += 1
 
         dlg = tk.Toplevel(self.root)
         dlg.title("Ligastatistik")
         dlg.geometry("500x400")
-        dlg.transient(self.root)
+        self._show_dialog(dlg)
         if os.path.exists(ICON_PATH):
             dlg.iconbitmap(ICON_PATH)
 
@@ -374,9 +778,9 @@ class APlayersGUI:
         text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         text.insert(tk.END, f"{'Liga':<25} {'Matcher':>7} {'I kö':>7} {'Hämtade':>8}\n")
         text.insert(tk.END, "-" * 50 + "\n")
-        for country in sorted(stats):
-            s = stats[country]
-            text.insert(tk.END, f"{country:<25} {s['total']:>7} {s['pending']:>7} {s['success']:>8}\n")
+        for name in sorted(stats):
+            s = stats[name]
+            text.insert(tk.END, f"{name:<25} {s['total']:>7} {s['pending']:>7} {s['success']:>8}\n")
         total_all = sum(s["total"] for s in stats.values())
         total_pend = sum(s["pending"] for s in stats.values())
         total_succ = sum(s["success"] for s in stats.values())
@@ -384,24 +788,237 @@ class APlayersGUI:
         text.insert(tk.END, f"{'Totalt':<25} {total_all:>7} {total_pend:>7} {total_succ:>8}\n")
         text.config(state=tk.DISABLED)
 
-    def _toggle_include_managers(self):
-        APlayers.INCLUDE_MANAGERS = self._inc_managers_var.get()
-        APlayers.save_settings()
+    def _manage_ligor(self):
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Hantera ligor")
+        dlg.geometry("1020x600")
+        self._show_dialog(dlg)
+        if os.path.exists(ICON_PATH):
+            dlg.iconbitmap(ICON_PATH)
 
-    def _toggle_include_substitutes(self):
-        APlayers.INCLUDE_SUBSTITUTES = self._inc_substitutes_var.get()
-        APlayers.save_settings()
+        self._ligor_list = APlayers.load_ligor()
+        self._edit_id = None
+
+        tree_frame = tk.Frame(dlg)
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10, 0))
+
+        cols = ("id", "url", "name", "country", "year", "responsible", "active")
+        tree = ttk.Treeview(tree_frame, columns=cols, show="headings", height=14)
+        headers = {"id": "Id", "url": "URL", "name": "Namn", "country": "Land",
+                   "year": "År", "responsible": "Ansvarig", "active": "Aktiv"}
+        widths = {"id": 45, "url": 330, "name": 170, "country": 140, "year": 45,
+                  "responsible": 110, "active": 60}
+        for c in cols:
+            tree.heading(c, text=headers[c])
+            anchor = "center" if c in ("id", "year", "active") else "w"
+            tree.column(c, width=widths[c], anchor=anchor)
+        tree.grid(row=0, column=0, sticky="nsew")
+        sb = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
+        sb.grid(row=0, column=1, sticky="ns")
+        tree.configure(yscrollcommand=sb.set)
+        tree_frame.rowconfigure(0, weight=1)
+        tree_frame.columnconfigure(0, weight=1)
+
+        def refresh_tree():
+            tree.delete(*tree.get_children())
+            for l in self._ligor_list:
+                tree.insert("", "end", iid=str(l["id"]),
+                            values=(l["id"], l.get("url", ""), l.get("name", ""),
+                                    l.get("country", ""), l.get("year", ""),
+                                    l.get("responsible", ""), "✓" if l.get("active", True) else ""))
+        refresh_tree()
+
+        form = tk.LabelFrame(dlg, text="Liga", padx=10, pady=8)
+        form.pack(fill=tk.X, padx=10, pady=(10, 0))
+
+        url_var = tk.StringVar()
+        name_var = tk.StringVar()
+        country_var = tk.StringVar()
+        year_var = tk.StringVar()
+        responsible_var = tk.StringVar(value=APlayers.DEFAULT_RESPONSIBLE)
+        active_var = tk.BooleanVar(value=True)
+
+        tk.Label(form, text="URL:", font=("", 9)).grid(row=0, column=0, sticky="e", padx=(0, 6), pady=2)
+        url_entry = tk.Entry(form, textvariable=url_var, width=60, font=("", 9))
+        url_entry.grid(row=0, column=1, columnspan=3, sticky="w", pady=2)
+        tk.Button(form, text="Hämta info", command=lambda: autofetch()).grid(row=0, column=4, padx=8)
+
+        tk.Label(form, text="Namn:", font=("", 9)).grid(row=1, column=0, sticky="e", padx=(0, 6), pady=2)
+        tk.Entry(form, textvariable=name_var, width=24, font=("", 9)).grid(row=1, column=1, sticky="w", pady=2)
+        tk.Label(form, text="Land:", font=("", 9)).grid(row=1, column=2, sticky="e", padx=(12, 6), pady=2)
+        tk.Entry(form, textvariable=country_var, width=20, font=("", 9)).grid(row=1, column=3, sticky="w", pady=2)
+
+        tk.Label(form, text="År:", font=("", 9)).grid(row=2, column=0, sticky="e", padx=(0, 6), pady=2)
+        tk.Entry(form, textvariable=year_var, width=8, font=("", 9)).grid(row=2, column=1, sticky="w", pady=2)
+        tk.Label(form, text="Ansvarig:", font=("", 9)).grid(row=2, column=2, sticky="e", padx=(12, 6), pady=2)
+        tk.Entry(form, textvariable=responsible_var, width=20, font=("", 9)).grid(row=2, column=3, sticky="w", pady=2)
+
+        tk.Checkbutton(form, text="Aktiv", variable=active_var, font=("", 9)).grid(row=1, column=4, sticky="w", padx=8)
+
+        def clear_form():
+            self._edit_id = None
+            url_var.set("")
+            name_var.set("")
+            country_var.set("")
+            year_var.set("")
+            responsible_var.set(APlayers.DEFAULT_RESPONSIBLE)
+            active_var.set(True)
+
+        def autofetch():
+            url = url_var.get().strip()
+            if not url:
+                return
+
+            def worker():
+                name, country, year = "", "", ""
+                try:
+                    name, country, year = APlayers.fetch_league_info(url)
+                except Exception:
+                    pass
+                if not year:
+                    m = re.search(r"saison_id/(\d{4})", url)
+                    year = m.group(1) if m else ""
+
+                def apply():
+                    if name:
+                        name_var.set(name)
+                    if country:
+                        country_var.set(country)
+                    if year:
+                        year_var.set(year)
+                dlg.after(0, apply)
+            threading.Thread(target=worker, daemon=True).start()
+
+        def save_liga():
+            url = url_var.get().strip()
+            if not url:
+                messagebox.showwarning("Saknas", "Ange en URL.", parent=dlg)
+                return
+            liga = {
+                "url": url,
+                "name": name_var.get().strip(),
+                "country": country_var.get().strip(),
+                "year": year_var.get().strip(),
+                "responsible": responsible_var.get().strip() or APlayers.DEFAULT_RESPONSIBLE,
+                "active": active_var.get(),
+            }
+            if self._edit_id is not None:
+                for l in self._ligor_list:
+                    if l["id"] == self._edit_id:
+                        l.update(liga)
+                        break
+            else:
+                liga["id"] = APlayers.next_liga_id(self._ligor_list)
+                self._ligor_list.append(liga)
+            APlayers.save_ligor(self._ligor_list)
+            refresh_tree()
+            clear_form()
+            self._refresh_dropdowns()
+            self._update_counts()
+
+        def delete_liga():
+            sel = tree.selection()
+            if not sel:
+                return
+            if not messagebox.askyesno("Ta bort", "Ta bort vald liga?", parent=dlg):
+                return
+            self._ligor_list = [l for l in self._ligor_list if str(l["id"]) != sel[0]]
+            APlayers.save_ligor(self._ligor_list)
+            refresh_tree()
+            if self._edit_id is not None and str(self._edit_id) == sel[0]:
+                clear_form()
+            self._refresh_dropdowns()
+            self._update_counts()
+
+        def on_select(event):
+            sel = tree.selection()
+            if not sel:
+                return
+            liga = next((l for l in self._ligor_list if str(l["id"]) == sel[0]), None)
+            if not liga:
+                return
+            self._edit_id = liga["id"]
+            url_var.set(liga.get("url", ""))
+            name_var.set(liga.get("name", ""))
+            country_var.set(liga.get("country", ""))
+            year_var.set(liga.get("year", ""))
+            responsible_var.set(liga.get("responsible", APlayers.DEFAULT_RESPONSIBLE))
+            active_var.set(bool(liga.get("active", True)))
+
+        tree.bind("<<TreeviewSelect>>", on_select)
+
+        btn_bar = tk.Frame(dlg)
+        btn_bar.pack(fill=tk.X, padx=10, pady=10)
+        tk.Button(btn_bar, text="Ny", command=clear_form, padx=16, pady=4, font=("", 9, "bold")).pack(side=tk.LEFT, padx=4)
+        tk.Button(btn_bar, text="Spara", command=save_liga, padx=16, pady=4, font=("", 9, "bold")).pack(side=tk.LEFT, padx=4)
+        tk.Button(btn_bar, text="Ta bort", command=delete_liga, padx=16, pady=4, font=("", 9)).pack(side=tk.LEFT, padx=4)
+        tk.Button(btn_bar, text="Stäng", command=dlg.destroy, padx=16, pady=4, font=("", 9)).pack(side=tk.RIGHT, padx=4)
 
     def _toggle_refetch_players(self):
         APlayers.REFETCH_PLAYERS = self._refetch_players_var.get()
         APlayers.save_settings()
 
+    def _settings_columns(self):
+        cols = APlayers.load_columns()
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Kolumner")
+        dlg.resizable(False, False)
+        self._show_dialog(dlg, modal=True)
+        if os.path.exists(ICON_PATH):
+            dlg.iconbitmap(ICON_PATH)
+
+        frm = tk.Frame(dlg, padx=12, pady=8)
+        frm.pack()
+
+        tk.Label(frm, text="Kolumn", font=("", 9, "bold")).grid(row=0, column=0, sticky="w", padx=(0, 16))
+        tk.Label(frm, text="Order", font=("", 9, "bold")).grid(row=0, column=1, padx=6)
+        tk.Label(frm, text="Lista", font=("", 9, "bold")).grid(row=0, column=2, padx=8)
+        tk.Label(frm, text="Excel", font=("", 9, "bold")).grid(row=0, column=3, padx=8)
+
+        vars_map = {}
+        for i, key in enumerate(APlayers.COLUMN_KEYS):
+            tk.Label(frm, text=APlayers.COLUMN_LABELS[key], font=("", 9)).grid(
+                row=i + 1, column=0, sticky="w", pady=1)
+            vorder = tk.StringVar(value=str(cols[key]["order"]))
+            vl = tk.BooleanVar(value=cols[key]["lista"])
+            ve = tk.BooleanVar(value=cols[key]["excel"])
+            vars_map[key] = (vorder, vl, ve)
+            tk.Entry(frm, textvariable=vorder, width=4, font=("", 9), justify="center").grid(
+                row=i + 1, column=1, pady=1)
+            tk.Checkbutton(frm, variable=vl).grid(row=i + 1, column=2)
+            tk.Checkbutton(frm, variable=ve).grid(row=i + 1, column=3)
+
+        def save_columns():
+            for key, (vorder, vl, ve) in vars_map.items():
+                cols[key]["lista"] = vl.get()
+                cols[key]["excel"] = ve.get()
+                try:
+                    order = int(vorder.get().strip())
+                    if order < 1:
+                        order = 1
+                except ValueError:
+                    order = (APlayers.COLUMN_KEYS.index(key) + 1) * 10
+                cols[key]["order"] = order
+            APlayers.save_columns(cols)
+            self._columns = cols
+            dlg.destroy()
+            self._reload_lista()
+
+        tk.Button(frm, text="Spara", command=save_columns, padx=16, pady=4,
+                  font=("", 9, "bold")).grid(row=len(APlayers.COLUMN_KEYS) + 1, column=0, columnspan=4, pady=(10, 0))
+
+        dlg.update_idletasks()
+        w = dlg.winfo_width()
+        h = dlg.winfo_height()
+        x = self.root.winfo_x() + (self.root.winfo_width() - w) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - h) // 2
+        dlg.geometry(f"+{x}+{y}")
+
     def _settings_event_labels(self):
         dlg = tk.Toplevel(self.root)
         dlg.title("Event labels")
         dlg.resizable(False, False)
-        dlg.transient(self.root)
-        dlg.grab_set()
+        self._show_dialog(dlg, modal=True)
         if os.path.exists(ICON_PATH):
             dlg.iconbitmap(ICON_PATH)
 
@@ -441,8 +1058,7 @@ class APlayersGUI:
         dlg.title("Fördröjning (ms)")
         dlg.geometry("250x100")
         dlg.resizable(False, False)
-        dlg.transient(self.root)
-        dlg.grab_set()
+        self._show_dialog(dlg, modal=True)
         if os.path.exists(ICON_PATH):
             dlg.iconbitmap(ICON_PATH)
 
@@ -473,8 +1089,7 @@ class APlayersGUI:
         dlg.title("Antal försök")
         dlg.geometry("250x100")
         dlg.resizable(False, False)
-        dlg.transient(self.root)
-        dlg.grab_set()
+        self._show_dialog(dlg, modal=True)
         if os.path.exists(ICON_PATH):
             dlg.iconbitmap(ICON_PATH)
 
@@ -507,8 +1122,7 @@ class APlayersGUI:
         dlg.title("Spelar ålder-cutoff")
         dlg.geometry("250x100")
         dlg.resizable(False, False)
-        dlg.transient(self.root)
-        dlg.grab_set()
+        self._show_dialog(dlg, modal=True)
         if os.path.exists(ICON_PATH):
             dlg.iconbitmap(ICON_PATH)
 
@@ -539,7 +1153,6 @@ class APlayersGUI:
         self.btn_ligor.config(state=state)
         self.btn_matcher.config(state=state)
         self.btn_spelare.config(state=state)
-        self.btn_csv.config(state=state)
         self.btn_excel.config(state=state)
         self.btn_abort.config(state=tk.NORMAL if running else tk.DISABLED)
 
@@ -569,12 +1182,6 @@ class APlayersGUI:
         t = threading.Thread(target=self._run_hamta_spelare, daemon=True)
         t.start()
 
-    def start_hamta_csv(self):
-        self._set_buttons(True)
-        _abort_event.clear()
-        t = threading.Thread(target=self._run_hamta_csv, daemon=True)
-        t.start()
-
     @staticmethod
     def _open_folder(filepath):
         folder = os.path.dirname(os.path.abspath(filepath))
@@ -589,8 +1196,7 @@ class APlayersGUI:
         dlg = tk.Toplevel(self.root)
         dlg.title("Export klar")
         dlg.resizable(False, False)
-        dlg.transient(self.root)
-        dlg.grab_set()
+        self._show_dialog(dlg, modal=True)
 
         frm = tk.Frame(dlg, padx=16, pady=12)
         frm.pack()
@@ -633,35 +1239,37 @@ class APlayersGUI:
     def _run_hamta_ligor(self):
         try:
             APlayers.log("=== Hämtar ligor ===", "C")
-            leagues = APlayers.load_leagues()
-            APlayers.log(f"Laddade {len(leagues)} ligor")
+            ligor = [l for l in APlayers.filter_ligor(APlayers.load_ligor(), self._current_filter()) if l.get("active")]
+            if not ligor:
+                APlayers.log("Inga aktiva ligor.", "Y")
+                return
+            APlayers.log(f"Laddade {len(ligor)} aktiva ligor")
 
-            matcher_data = APlayers.load_matcher()
-            existing_urls = {m["url"] for m in matcher_data["matches"]}
+            data = APlayers.load_data()
+            total_leagues = len(ligor)
+            new_games = 0
 
-            total_leagues = len(leagues)
-            new_matches = []
-
-            for i, (user, country, url) in enumerate(leagues):
+            for i, liga in enumerate(ligor):
                 if _abort_event.is_set():
                     APlayers.log("Avbruten av användare.", "BR")
                     break
-                put_progress(i + 1, total_leagues, f"Hämtar {country}...")
-                match_urls = APlayers.extract_result_links(country, url)
+                name = liga.get("name") or liga.get("country") or "?"
+                put_progress(i + 1, total_leagues, f"Hämtar {name}...")
+                league = APlayers.ensure_league(data, liga)
+                match_urls = APlayers.extract_result_links(name, liga.get("url", ""))
                 new_count = 0
+                games = league.setdefault("Games", {})
                 for m in match_urls:
-                    if m not in existing_urls:
-                        matcher_data["matches"].append({"country": country, "url": m, "status": "pending"})
-                        new_matches.append((country, m))
+                    gid = m.rstrip("/").rsplit("/", 1)[-1]
+                    if gid not in games:
+                        games[gid] = {"Url": m, "Status": "pending"}
+                        new_games += 1
                         new_count += 1
                 tag = f"{new_count} nya" if new_count else "0 nya"
                 APlayers.log(f"  {len(match_urls)} på sida, {tag}", "B")
 
-            APlayers.save_matcher(matcher_data)
-            total_pending = sum(1 for m in matcher_data["matches"] if m["status"] == "pending")
-            total_done = len(matcher_data["matches"]) - total_pending
-
-            APlayers.log(f"{len(new_matches)} nya matcher tillagda. {total_done} redan klara, {total_pending} i kö.", "C")
+            APlayers.save_data(data)
+            APlayers.log(f"{new_games} nya matcher tillagda.", "C")
             APlayers.log("Klart.", "BG")
             play_success()
         except Exception as e:
@@ -669,15 +1277,25 @@ class APlayersGUI:
         finally:
             self.root.after(0, lambda: self._set_buttons(False))
             self.root.after(0, lambda: setattr(self, '_task_start', None))
+            self.root.after(0, self._refresh_dropdowns)
             self.root.after(0, self._update_counts)
+            self.root.after(0, self._reload_lista)
             put_progress(0, 1, "Redo")
 
     # --- Worker: Hamta matcher ---
     def _run_hamta_matcher(self):
         try:
             APlayers.log("=== Hämtar matcher ===", "C")
-            matcher_data = APlayers.load_matcher()
-            pending = [m for m in matcher_data["matches"] if m["status"] == "pending"]
+            data = APlayers.load_data()
+            active_ids = self._get_selected_ids()
+
+            pending = []
+            for lid, league in data.get("Leagues", {}).items():
+                if league.get("Id") not in active_ids:
+                    continue
+                for gid, game in league.get("Games", {}).items():
+                    if game.get("Status") == "pending":
+                        pending.append((league, game))
 
             if not pending:
                 APlayers.log("Inga matcher i kö.", "BG")
@@ -687,14 +1305,15 @@ class APlayersGUI:
             success = 0
             fail = 0
 
-            for i, match in enumerate(pending):
+            for i, (league, game) in enumerate(pending):
                 if _abort_event.is_set():
                     APlayers.log("Avbruten av användare.", "BR")
                     break
 
-                country = match["country"]
-                url = match["url"]
-                put_progress(i + 1, total, f"Behandlar {country}...")
+                country = league.get("Country", "?")
+                url = game.get("Url", "")
+                name = league.get("Name", "?")
+                put_progress(i + 1, total, f"Behandlar {name}...")
 
                 rows, meta = APlayers.parse_match(country, url, compact=True)
 
@@ -704,15 +1323,16 @@ class APlayersGUI:
                     continue
 
                 if rows:
-                    match["status"] = "success"
-                    match.update(meta)
-                    match["players"] = rows
+                    game["Status"] = "success"
+                    game["Meta"] = meta
+                    game["Lineup"] = rows
+                    APlayers.add_players_from_lineup(data, rows)
                     success += 1
                 else:
                     fail += 1
                     APlayers.log("  Ingen data", "Y")
 
-                APlayers.save_matcher(matcher_data)
+                APlayers.save_data(data)
 
             APlayers.log(f"Resultat: {success} lyckade, {fail} misslyckades (av {total}).", "BG" if fail == 0 else "Y")
             play_success()
@@ -721,15 +1341,17 @@ class APlayersGUI:
         finally:
             self.root.after(0, lambda: self._set_buttons(False))
             self.root.after(0, lambda: setattr(self, '_task_start', None))
+            self.root.after(0, self._refresh_dropdowns)
             self.root.after(0, self._update_counts)
+            self.root.after(0, self._reload_lista)
             put_progress(0, 1, "Redo")
 
     # --- Worker: Hamta spelare ---
     def _run_hamta_spelare(self):
         try:
-            matcher_data = APlayers.load_matcher()
-            added = APlayers.collect_players(matcher_data)
-            APlayers.save_matcher(matcher_data)
+            data = APlayers.load_data()
+            added = APlayers.collect_players(data)
+            APlayers.save_data(data)
             if added:
                 APlayers.log(f"Lade till {added} spelare i spellistan.", "BG")
             else:
@@ -737,11 +1359,11 @@ class APlayersGUI:
 
             cutoff = APlayers.PLAYER_AGE_CUTOFF
             fetched = APlayers.fetch_player_details(
-                matcher_data, cutoff,
+                data, cutoff,
                 progress_cb=lambda cur, tot, name: put_progress(cur, tot, f"Hämtar detaljer: {name}"),
                 refetch=APlayers.REFETCH_PLAYERS
             )
-            APlayers.save_matcher(matcher_data)
+            APlayers.save_data(data)
             if fetched:
                 APlayers.log(f"Hämtade detaljer för {fetched} spelare.", "BG")
             else:
@@ -750,51 +1372,10 @@ class APlayersGUI:
             APlayers.log(f"Fel: {e}", "BR")
         finally:
             self.root.after(0, lambda: self._set_buttons(False))
+            self.root.after(0, self._refresh_dropdowns)
             self.root.after(0, self._update_counts)
+            self.root.after(0, self._reload_lista)
             put_progress(0, 1, "Redo")
-
-    # --- Worker: Hamta CSV ---
-    def _run_hamta_csv(self):
-        try:
-            matcher_data = APlayers.load_matcher()
-            success_count = sum(1 for m in matcher_data["matches"] if m["status"] == "success")
-            if success_count == 0:
-                APlayers.log("Inga hämtade matcher att exportera.", "Y")
-                return
-
-            now = datetime.now()
-            default_name = f"Output {now.strftime('%Y-%m-%d')}.csv"
-            filepath = filedialog.asksaveasfilename(
-                parent=self.root,
-                title="Save CSV",
-                initialfile=default_name,
-                defaultextension=".csv",
-                filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
-            )
-
-            if not filepath:
-                APlayers.log("CSV-export avbruten.", "Y")
-                return
-
-            if os.path.exists(filepath):
-                if not messagebox.askyesno("Skriv över?", f"'{os.path.basename(filepath)}' finns redan.\nSkriv över?"):
-                    APlayers.log("CSV-export avbruten.", "Y")
-                    return
-
-            written = APlayers.export_csv(matcher_data, filepath)
-            APlayers.log(f"Exporterade {written} rader till {filepath}", "BG")
-            self.root.after(0, lambda fp=filepath: self._ask_open_folder(fp))
-        except PermissionError:
-            self.root.after(0, lambda: messagebox.showerror(
-                "Åtkomst nekad",
-                "Kan inte spara filen!\n\n"
-                "Filen är troligtvis öppen i ett annat program.\n"
-                "Stäng filen och försök igen."))
-            APlayers.log("Fel: Filen är upptagen eller skrivskyddad.", "BR")
-        except Exception as e:
-            APlayers.log(f"Fel: {e}", "BR")
-        finally:
-            self.root.after(0, lambda: self._set_buttons(False))
 
     # --- Worker: Export excel ---
     def start_export_excel(self):
@@ -805,8 +1386,14 @@ class APlayersGUI:
 
     def _run_export_excel(self):
         try:
-            matcher_data = APlayers.load_matcher()
-            success_count = sum(1 for m in matcher_data["matches"] if m["status"] == "success")
+            data = APlayers.load_data()
+            active_ids = self._get_active_ids()
+            sel = self._current_filter()
+            success_count = sum(
+                1 for lid, league in data.get("Leagues", {}).items()
+                if APlayers.match_filter_league(league, active_ids, sel)
+                for gid, game in league.get("Games", {}).items() if game.get("Status") == "success"
+            )
             if success_count == 0:
                 APlayers.log("Inga hämtade matcher att exportera.", "Y")
                 return
@@ -826,11 +1413,14 @@ class APlayersGUI:
                 return
 
             if os.path.exists(filepath):
-                if not messagebox.askyesno("Skriv över?", f"'{os.path.basename(filepath)}' finns redan.\nSkriv över?"):
+                if not messagebox.askyesno("Skriv över?", f"'{os.path.basename(filepath)}' finns redan.\nSkriv över?", parent=self.root):
                     APlayers.log("Excel-export avbruten.", "Y")
                     return
 
-            written = APlayers.export_excel(matcher_data, filepath)
+            written = APlayers.export_excel(
+                data, filepath, active_ids=active_ids, sel=sel,
+                columns=APlayers.visible_columns(self._columns, "excel")
+            )
             APlayers.log(f"Exporterade {written} rader till {filepath}", "BG")
             self.root.after(0, lambda fp=filepath: self._ask_open_folder(fp))
         except ImportError as e:
@@ -840,12 +1430,22 @@ class APlayersGUI:
                 "Åtkomst nekad",
                 "Kan inte spara filen!\n\n"
                 "Filen är troligtvis öppen i ett annat program.\n"
-                "Stäng filen och försök igen."))
+                "Stäng filen och försök igen.", parent=self.root))
             APlayers.log("Fel: Filen är upptagen eller skrivskyddad.", "BR")
         except Exception as e:
             APlayers.log(f"Fel: {e}", "BR")
         finally:
             self.root.after(0, lambda: self._set_buttons(False))
+
+    def _on_close(self):
+        try:
+            w = self.root.winfo_width()
+            h = self.root.winfo_height()
+            if w > 100 and h > 100:
+                APlayers.save_window_size(w, h)
+        except Exception:
+            pass
+        self.root.destroy()
 
     def run(self):
         self.root.mainloop()
@@ -856,6 +1456,7 @@ def run():
     app = APlayersGUI()
     app.log_console("=== APlayers redo ===", "C")
     app._update_counts()
+    app._reload_lista()
     app.run()
 
 
