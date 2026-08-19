@@ -938,6 +938,65 @@ PERFORMANCE_COLUMNS = [
 
 PLAYER_EXPORT_HEADER = ["id", "name", "age", "club", "dob", "country", "height", "position", "league", "year"] + PERFORMANCE_COLUMNS
 
+PLAYER_COLUMN_KEYS = list(PLAYER_EXPORT_HEADER)
+
+PLAYER_COLUMN_LABELS = {
+    "id": "Id",
+    "name": "Name",
+    "age": "Age",
+    "club": "Club",
+    "dob": "Dob",
+    "country": "Country",
+    "height": "Height",
+    "position": "Position",
+    "league": "League",
+    "year": "Year",
+}
+for _k in PERFORMANCE_COLUMNS:
+    PLAYER_COLUMN_LABELS[_k] = _k
+
+PLAYER_DEFAULT_COLUMNS = {key: {"lista": True, "excel": True} for key in PLAYER_COLUMN_KEYS}
+
+
+def load_player_columns():
+    cfg = _load_config()
+    cols = {}
+    for i, key in enumerate(PLAYER_COLUMN_KEYS):
+        d = PLAYER_DEFAULT_COLUMNS.get(key, {"lista": True, "excel": True})
+        cols[key] = {"lista": d["lista"], "excel": d["excel"], "order": (i + 1) * 10}
+    if cfg.has_section("PlayerColumns"):
+        for key in PLAYER_COLUMN_KEYS:
+            if cfg.has_option("PlayerColumns", key + "_lista"):
+                cols[key]["lista"] = cfg.getboolean("PlayerColumns", key + "_lista", fallback=True)
+            if cfg.has_option("PlayerColumns", key + "_excel"):
+                cols[key]["excel"] = cfg.getboolean("PlayerColumns", key + "_excel", fallback=True)
+            if cfg.has_option("PlayerColumns", key + "_order"):
+                cols[key]["order"] = cfg.getint("PlayerColumns", key + "_order", fallback=(PLAYER_COLUMN_KEYS.index(key) + 1) * 10)
+    return cols
+
+
+def save_player_columns(cols):
+    cfg = _load_config()
+    data = {}
+    for key in PLAYER_COLUMN_KEYS:
+        c = cols.get(key, {"lista": True, "excel": True})
+        data[key + "_lista"] = str(bool(c.get("lista", True)))
+        data[key + "_excel"] = str(bool(c.get("excel", True)))
+        data[key + "_order"] = str(int(c.get("order", (PLAYER_COLUMN_KEYS.index(key) + 1) * 10)))
+    cfg["PlayerColumns"] = data
+    _write_config(cfg)
+
+
+def visible_player_columns(cols, flag):
+    def key(k):
+        c = cols.get(k, {})
+        order = c.get("order")
+        if order is None:
+            order = (PLAYER_COLUMN_KEYS.index(k) + 1) * 10
+        return (order, PLAYER_COLUMN_LABELS.get(k, k))
+
+    return sorted([k for k in PLAYER_COLUMN_KEYS if cols.get(k, {}).get(flag, True)], key=key)
+
 COLUMN_KEYS = ["responsible", "liga", "country", "year", "matchday", "fixture", "team", "date", "time",
                "result", "section", "player_id", "number", "name", "role", "salary", "age",
                "nationality", "url", "events"]
@@ -1088,7 +1147,7 @@ def export_csv(data, output_path, active_ids=None, sel=None):
     return written
 
 
-def export_excel(data, output_path, active_ids=None, sel=None, columns=None, include_players=False, player_sel=None):
+def export_excel(data, output_path, active_ids=None, sel=None, columns=None, include_players=False, player_sel=None, player_columns=None):
     try:
         import openpyxl
         from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -1173,11 +1232,14 @@ def export_excel(data, output_path, active_ids=None, sel=None, columns=None, inc
         ws.auto_filter.ref = f"A1:{get_column_letter(len(header))}{row_num - 1}"
 
     if include_players:
-        player_ws = wb.create_sheet(title="spelare")
+        player_ws = wb.create_sheet(title="Spelare Detaljlista")
         player_ws.sheet_properties.tabColor = "7030A0"
-        player_rows = list(iter_player_export_rows(data, player_sel))
+        if player_columns is None:
+            player_columns = PLAYER_COLUMN_KEYS
+        player_header = [PLAYER_COLUMN_LABELS.get(k, k) for k in player_columns]
+        player_col_indices = [PLAYER_COLUMN_KEYS.index(k) for k in player_columns]
 
-        for col_idx, h in enumerate(PLAYER_EXPORT_HEADER, 1):
+        for col_idx, h in enumerate(player_header, 1):
             cell = player_ws.cell(row=1, column=col_idx, value=h)
             cell.font = header_font
             cell.fill = header_fill
@@ -1187,9 +1249,10 @@ def export_excel(data, output_path, active_ids=None, sel=None, columns=None, inc
         player_ws.freeze_panes = "A2"
 
         player_row_num = 2
-        player_col_max = [len(h) for h in PLAYER_EXPORT_HEADER]
-        for prow in player_rows:
-            for col_idx, value in enumerate(prow):
+        player_col_max = [len(h) for h in player_header]
+        for prow in iter_player_export_rows(data, player_sel):
+            values = [prow[i] for i in player_col_indices]
+            for col_idx, value in enumerate(values):
                 cell = player_ws.cell(row=player_row_num, column=col_idx + 1, value=value)
                 cell.alignment = cell_alignment
                 cell.border = thin_border
@@ -1202,7 +1265,7 @@ def export_excel(data, output_path, active_ids=None, sel=None, columns=None, inc
             col_letter = get_column_letter(col_idx + 1)
             player_ws.column_dimensions[col_letter].width = min(max_w + 3, 150)
 
-        player_ws.auto_filter.ref = f"A1:{get_column_letter(len(PLAYER_EXPORT_HEADER))}{player_row_num - 1}"
+        player_ws.auto_filter.ref = f"A1:{get_column_letter(len(player_header))}{player_row_num - 1}"
 
     summary_ws = wb.create_sheet(title="Summary")
     summary_ws.sheet_properties.tabColor = "548235"

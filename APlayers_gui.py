@@ -235,6 +235,7 @@ class APlayersGUI:
         self._last_total = 1
 
         self._columns = APlayers.load_columns()
+        self._player_columns = APlayers.load_player_columns()
         self._lista_generation = 0
         self._lista_columns = []
         self._lista_rows = []
@@ -279,7 +280,8 @@ class APlayersGUI:
         settings_menu.add_checkbutton(label="Exportera spelare", variable=self._export_players_var,
                                       command=self._toggle_export_players)
         settings_menu.add_command(label="Event labels...", command=self._settings_event_labels)
-        settings_menu.add_command(label="Kolumner...", command=self._settings_columns)
+        settings_menu.add_command(label="Kolumner matcher & Ligor", command=self._settings_columns)
+        settings_menu.add_command(label="Kolumner Spelare detaljlista", command=self._settings_player_columns)
 
         about_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Om", menu=about_menu)
@@ -1218,6 +1220,61 @@ class APlayersGUI:
         y = self.root.winfo_y() + (self.root.winfo_height() - h) // 2
         dlg.geometry(f"+{x}+{y}")
 
+    def _settings_player_columns(self):
+        cols = APlayers.load_player_columns()
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Kolumner Spelare detaljlista")
+        dlg.resizable(False, False)
+        self._show_dialog(dlg, modal=True)
+        if os.path.exists(ICON_PATH):
+            dlg.iconbitmap(ICON_PATH)
+
+        frm = tk.Frame(dlg, padx=12, pady=8)
+        frm.pack()
+
+        tk.Label(frm, text="Kolumn", font=("", 9, "bold")).grid(row=0, column=0, sticky="w", padx=(0, 16))
+        tk.Label(frm, text="Order", font=("", 9, "bold")).grid(row=0, column=1, padx=6)
+        tk.Label(frm, text="Lista", font=("", 9, "bold")).grid(row=0, column=2, padx=8)
+        tk.Label(frm, text="Excel", font=("", 9, "bold")).grid(row=0, column=3, padx=8)
+
+        vars_map = {}
+        for i, key in enumerate(APlayers.PLAYER_COLUMN_KEYS):
+            tk.Label(frm, text=APlayers.PLAYER_COLUMN_LABELS.get(key, key), font=("", 9)).grid(
+                row=i + 1, column=0, sticky="w", pady=1)
+            vorder = tk.StringVar(value=str(cols[key]["order"]))
+            vl = tk.BooleanVar(value=cols[key]["lista"])
+            ve = tk.BooleanVar(value=cols[key]["excel"])
+            vars_map[key] = (vorder, vl, ve)
+            tk.Entry(frm, textvariable=vorder, width=4, font=("", 9), justify="center").grid(
+                row=i + 1, column=1, pady=1)
+            tk.Checkbutton(frm, variable=vl).grid(row=i + 1, column=2)
+            tk.Checkbutton(frm, variable=ve).grid(row=i + 1, column=3)
+
+        def save_columns():
+            for key, (vorder, vl, ve) in vars_map.items():
+                cols[key]["lista"] = vl.get()
+                cols[key]["excel"] = ve.get()
+                try:
+                    order = int(vorder.get().strip())
+                    if order < 1:
+                        order = 1
+                except ValueError:
+                    order = (APlayers.PLAYER_COLUMN_KEYS.index(key) + 1) * 10
+                cols[key]["order"] = order
+            APlayers.save_player_columns(cols)
+            self._player_columns = cols
+            dlg.destroy()
+
+        tk.Button(frm, text="Spara", command=save_columns, padx=16, pady=4,
+                  font=("", 9, "bold")).grid(row=len(APlayers.PLAYER_COLUMN_KEYS) + 1, column=0, columnspan=4, pady=(10, 0))
+
+        dlg.update_idletasks()
+        w = dlg.winfo_width()
+        h = dlg.winfo_height()
+        x = self.root.winfo_x() + (self.root.winfo_width() - w) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - h) // 2
+        dlg.geometry(f"+{x}+{y}")
+
     def _toggle_sound(self):
         APlayers.SOUND = self._sound_var.get()
         APlayers.save_settings()
@@ -1633,7 +1690,8 @@ class APlayersGUI:
                 data, filepath, active_ids=active_ids, sel=sel,
                 columns=APlayers.visible_columns(self._columns, "excel"),
                 include_players=APlayers.EXPORT_PLAYERS,
-                player_sel=self._current_player_filter()
+                player_sel=self._current_player_filter(),
+                player_columns=APlayers.visible_player_columns(self._player_columns, "excel")
             )
             APlayers.log(f"Exporterade {written} rader till {filepath}", "BG")
             self.root.after(0, lambda fp=filepath: self._ask_open_folder(fp))
