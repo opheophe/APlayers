@@ -1605,6 +1605,7 @@ class APlayersGUI:
         t.start()
 
     def start_hamta_spelare(self):
+        self._task_start = time.time()
         self._set_buttons(True)
         _abort_event.clear()
         t = threading.Thread(target=self._run_hamta_spelare, daemon=True)
@@ -1802,6 +1803,7 @@ class APlayersGUI:
             APlayers.log(f"Fel: {e}", "BR")
         finally:
             self.root.after(0, lambda: self._set_buttons(False))
+            self.root.after(0, lambda: setattr(self, '_task_start', None))
             self.root.after(0, self._refresh_dropdowns)
             self.root.after(0, self._update_counts)
             self.root.after(0, self._reload_lista)
