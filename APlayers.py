@@ -21,6 +21,7 @@ DELAY_MS = 2000
 RETRIES = 10
 PLAYER_AGE_CUTOFF = 18
 REFETCH_PLAYERS = False
+SOUND = True
 EVENT_LABELS = {
     "sb-aus": "Subbed out",
     "sb-ein": "Subbed in",
@@ -88,7 +89,7 @@ DEFAULT_LIGOR = [
 
 
 def load_settings():
-    global DELAY_MS, RETRIES, EVENT_LABELS, PLAYER_AGE_CUTOFF, REFETCH_PLAYERS
+    global DELAY_MS, RETRIES, EVENT_LABELS, PLAYER_AGE_CUTOFF, REFETCH_PLAYERS, SOUND
     if not os.path.exists(SETTINGS_PATH):
         save_settings()
         return
@@ -99,6 +100,7 @@ def load_settings():
         RETRIES = cfg.getint("Settings", "retries", fallback=10)
         PLAYER_AGE_CUTOFF = cfg.getint("Settings", "player_age_cutoff", fallback=18)
         REFETCH_PLAYERS = cfg.getboolean("Settings", "refetch_players", fallback=False)
+        SOUND = cfg.getboolean("Settings", "sound", fallback=True)
     except Exception:
         pass
     if cfg.has_section("EventLabels"):
@@ -113,6 +115,7 @@ def save_settings():
         "retries": str(RETRIES),
         "player_age_cutoff": str(PLAYER_AGE_CUTOFF),
         "refetch_players": str(REFETCH_PLAYERS),
+        "sound": str(SOUND),
     }
     cfg["EventLabels"] = EVENT_LABELS
     _write_config(cfg)

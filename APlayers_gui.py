@@ -52,6 +52,8 @@ ICON_PATH = os.path.join(SCRIPT_DIR, "Resources", "icon.ico")
 
 
 def play_success():
+    if not APlayers.SOUND:
+        return
     if os.path.exists(SUCCESS_WAV):
         try:
             import winsound
@@ -269,6 +271,10 @@ class APlayersGUI:
         settings_menu.add_checkbutton(label="Hämta spelare på nytt", variable=self._refetch_players_var,
                                       command=self._toggle_refetch_players)
         settings_menu.add_separator()
+
+        self._sound_var = tk.BooleanVar(value=APlayers.SOUND)
+        settings_menu.add_checkbutton(label="Ljud", variable=self._sound_var,
+                                      command=self._toggle_sound)
         settings_menu.add_command(label="Event labels...", command=self._settings_event_labels)
         settings_menu.add_command(label="Kolumner...", command=self._settings_columns)
 
@@ -1164,6 +1170,10 @@ class APlayersGUI:
         x = self.root.winfo_x() + (self.root.winfo_width() - w) // 2
         y = self.root.winfo_y() + (self.root.winfo_height() - h) // 2
         dlg.geometry(f"+{x}+{y}")
+
+    def _toggle_sound(self):
+        APlayers.SOUND = self._sound_var.get()
+        APlayers.save_settings()
 
     def _settings_event_labels(self):
         dlg = tk.Toplevel(self.root)
