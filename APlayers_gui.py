@@ -1,7 +1,6 @@
 import os
 import re
 import sys
-from collections import Counter
 import time
 import queue
 import threading
@@ -77,7 +76,6 @@ class MultiSelectDropdown:
     def __init__(self, parent, options=None, callback=None, width=DROPDOWN_WIDTH, font=None):
         self._selected = set()
         self._options = []
-        self._counts = {}
         self._callback = callback
         self._popup = None
         self._vars = {}
@@ -88,17 +86,10 @@ class MultiSelectDropdown:
         if options:
             self.set_options(options)
 
-    def set_options(self, options, counts=None):
+    def set_options(self, options):
         self._options = list(options)
-        self._counts = counts or {}
         self._selected &= set(options)
         self._update_text()
-
-    def _fmt_option(self, opt):
-        n = self._counts.get(opt)
-        if n:
-            return f"{opt} ({n})"
-        return str(opt)
 
     def set_selected(self, values):
         self._selected = set(values)
@@ -149,7 +140,7 @@ class MultiSelectDropdown:
             pass
         self._popup = popup
 
-        longest = max([len(self._fmt_option(o)) for o in self._options] or [4])
+        longest = max([len(str(o)) for o in self._options] or [4])
         popup_w = max(190, min(380, longest * 11 + 70))
         list_h = min(240, max(64, len(self._options) * 36 + 12))
 
@@ -165,7 +156,7 @@ class MultiSelectDropdown:
         for opt in self._options:
             var = tk.BooleanVar(value=(opt in self._selected))
             self._vars[opt] = var
-            cb = ctk.CTkCheckBox(frame, text=self._fmt_option(opt), variable=var,
+            cb = ctk.CTkCheckBox(frame, text=str(opt), variable=var,
                                  fg_color=DROPDOWN_BG, hover_color=DROPDOWN_BG_HOVER,
                                  text_color=DROPDOWN_TEXT,
                                  command=lambda o=opt: self._on_toggle(o))
@@ -960,9 +951,8 @@ class APlayersGUI:
                 sel[other] = vals if vals else None
             matches = APlayers.filter_ligor(active, sel)
             attr = attr_map[key]
-            counts = Counter(l.get(attr, "") for l in matches if l.get(attr))
-            values = sorted(counts)
-            self._sel_dropdowns[key].set_options(values, counts=counts)
+            values = sorted({l.get(attr, "") for l in matches if l.get(attr)})
+            self._sel_dropdowns[key].set_options(values)
 
         self._refresh_player_dropdowns()
         self._refresh_player_detail_dropdowns()
@@ -982,26 +972,23 @@ class APlayersGUI:
                         yield p
 
     def _refresh_player_dropdowns(self):
-        base = self._current_filter()
+        sections = ["Starting Line-up", "Substitutes", "Manager"]
+        self._sel_dropdowns["section"].set_options(sections)
 
-        sec_sel = dict(base)
-        sec_sel["section"] = None
-        sections_c = Counter(p[0] for p in self._matching_rows(sec_sel) if p[0])
-        sections = [s for s in ("Starting Line-up", "Substitutes", "Manager") if s in sections_c]
-        self._sel_dropdowns["section"].set_options(sections, counts=sections_c)
+        base = self._current_filter()
 
         pos_sel = dict(base)
         pos_sel["position"] = None
         pos_sel["age"] = None
-        positions_c = Counter(p[5] for p in self._matching_rows(pos_sel) if p[5] and p[5] != "Manager")
-        self._sel_dropdowns["position"].set_options(sorted(positions_c), counts=positions_c)
+        positions = sorted({p[5] for p in self._matching_rows(pos_sel) if p[5] and p[5] != "Manager"})
+        self._sel_dropdowns["position"].set_options(positions)
 
         base = self._current_filter()
         age_sel = dict(base)
         age_sel["age"] = None
-        ages_c = Counter(p[7] for p in self._matching_rows(age_sel) if p[7])
-        self._sel_dropdowns["age"].set_options(
-            sorted(ages_c, key=lambda a: int(a) if a.isdigit() else 0), counts=ages_c)
+        ages = sorted({p[7] for p in self._matching_rows(age_sel) if p[7]},
+                      key=lambda a: int(a) if a.isdigit() else 0)
+        self._sel_dropdowns["age"].set_options(ages)
 
     def _refresh_player_detail_dropdowns(self):
         data = APlayers.load_data()
@@ -1013,12 +1000,12 @@ class APlayersGUI:
             idx = APlayers.PLAYER_COLUMN_KEYS.index(col_key)
             excl = dict(sel)
             excl[key] = None
-            counts = Counter(str(row[idx]) for row in APlayers.iter_player_export_rows(data, excl) if row[idx])
+            values = {str(row[idx]) for row in APlayers.iter_player_export_rows(data, excl) if row[idx]}
             if col_key == "age":
-                values = sorted(counts, key=lambda a: int(a) if a.isdigit() else 0)
+                values = sorted(values, key=lambda a: int(a) if a.isdigit() else 0)
             else:
-                values = sorted(counts)
-            self._sel_dropdowns[key].set_options(values, counts=counts)
+                values = sorted(values)
+            self._sel_dropdowns[key].set_options(values)
 
     def _current_player_filter(self):
         sel = {}
