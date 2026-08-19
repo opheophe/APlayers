@@ -1292,6 +1292,28 @@ class APlayersGUI:
         APlayers.REFETCH_PLAYERS = self._refetch_players_var.get()
         APlayers.save_settings()
 
+    def _scrollable_frame(self, parent, height=430):
+        container = tk.Frame(parent)
+        container.pack(fill=tk.BOTH, expand=True, padx=12, pady=(8, 0))
+
+        canvas = tk.Canvas(container, height=height, highlightthickness=0)
+        vsb = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        inner = tk.Frame(canvas)
+        inner_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(inner_id, width=e.width))
+        return canvas, inner
+
+    def _bind_wheel(self, widget, canvas):
+        widget.bind("<MouseWheel>",
+                    lambda e: canvas.yview_scroll(int(-e.delta / 120), "units"))
+        for child in widget.winfo_children():
+            self._bind_wheel(child, canvas)
+
     def _settings_columns(self):
         cols = APlayers.load_columns()
         dlg = tk.Toplevel(self.root)
@@ -1301,8 +1323,7 @@ class APlayersGUI:
         if os.path.exists(ICON_PATH):
             dlg.iconbitmap(ICON_PATH)
 
-        frm = tk.Frame(dlg, padx=12, pady=8)
-        frm.pack()
+        canvas, frm = self._scrollable_frame(dlg)
 
         tk.Label(frm, text="Kolumn", font=("", 9, "bold")).grid(row=0, column=0, sticky="w", padx=(0, 16))
         tk.Label(frm, text="Order", font=("", 9, "bold")).grid(row=0, column=1, padx=6)
@@ -1338,8 +1359,12 @@ class APlayersGUI:
             dlg.destroy()
             self._reload_lista()
 
-        tk.Button(frm, text="Spara", command=save_columns, padx=16, pady=4,
-                  font=("", 9, "bold")).grid(row=len(APlayers.COLUMN_KEYS) + 1, column=0, columnspan=4, pady=(10, 0))
+        btn_frame = tk.Frame(dlg)
+        btn_frame.pack(fill=tk.X, padx=12, pady=(10, 8))
+        tk.Button(btn_frame, text="Spara", command=save_columns, padx=16, pady=4,
+                  font=("", 9, "bold")).pack()
+
+        self._bind_wheel(dlg, canvas)
 
         dlg.update_idletasks()
         w = dlg.winfo_width()
@@ -1357,8 +1382,7 @@ class APlayersGUI:
         if os.path.exists(ICON_PATH):
             dlg.iconbitmap(ICON_PATH)
 
-        frm = tk.Frame(dlg, padx=12, pady=8)
-        frm.pack()
+        canvas, frm = self._scrollable_frame(dlg)
 
         tk.Label(frm, text="Kolumn", font=("", 9, "bold")).grid(row=0, column=0, sticky="w", padx=(0, 16))
         tk.Label(frm, text="Order", font=("", 9, "bold")).grid(row=0, column=1, padx=6)
@@ -1394,8 +1418,12 @@ class APlayersGUI:
             dlg.destroy()
             self._reload_player_detail()
 
-        tk.Button(frm, text="Spara", command=save_columns, padx=16, pady=4,
-                  font=("", 9, "bold")).grid(row=len(APlayers.PLAYER_COLUMN_KEYS) + 1, column=0, columnspan=4, pady=(10, 0))
+        btn_frame = tk.Frame(dlg)
+        btn_frame.pack(fill=tk.X, padx=12, pady=(10, 8))
+        tk.Button(btn_frame, text="Spara", command=save_columns, padx=16, pady=4,
+                  font=("", 9, "bold")).pack()
+
+        self._bind_wheel(dlg, canvas)
 
         dlg.update_idletasks()
         w = dlg.winfo_width()
