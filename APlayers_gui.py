@@ -275,6 +275,9 @@ class APlayersGUI:
         self._sound_var = tk.BooleanVar(value=APlayers.SOUND)
         settings_menu.add_checkbutton(label="Ljud", variable=self._sound_var,
                                       command=self._toggle_sound)
+        self._export_players_var = tk.BooleanVar(value=APlayers.EXPORT_PLAYERS)
+        settings_menu.add_checkbutton(label="Exportera spelare", variable=self._export_players_var,
+                                      command=self._toggle_export_players)
         settings_menu.add_command(label="Event labels...", command=self._settings_event_labels)
         settings_menu.add_command(label="Kolumner...", command=self._settings_columns)
 
@@ -361,19 +364,31 @@ class APlayersGUI:
                        state="readonly", relief="solid", bd=1, readonlybackground="white")
         ent.grid(row=1, column=3, pady=(4, 0), sticky="ew")
 
-        # --- Section: Spelare totalt ---
-        tot_frame = tk.LabelFrame(self.root, text="Spelare totalt", padx=8, pady=4)
+        # --- Section: Spelare detaljlista ---
+        tot_frame = tk.LabelFrame(self.root, text="Spelare detaljlista", padx=8, pady=4)
         tot_frame.pack(fill=tk.X, padx=10, pady=(6, 0))
-        tot_frame.columnconfigure(0, uniform="lbl")
-        tot_frame.columnconfigure(1, uniform="box")
+        for col in (1, 3, 5, 7):
+            tot_frame.columnconfigure(col, uniform="box")
+        for col in (0, 2, 4, 6):
+            tot_frame.columnconfigure(col, uniform="lbl")
+
+        player_detail_filters = [("player_age", "Ålder"), ("player_country", "Land"),
+                                 ("player_league", "Liga"), ("player_year", "År")]
+        for i, (key, text) in enumerate(player_detail_filters):
+            tk.Label(tot_frame, text=text, font=("", 9), anchor="e").grid(
+                row=0, column=i * 2, padx=(0 if i == 0 else 12, 4), sticky="ew")
+            dd = MultiSelectDropdown(tot_frame, callback=self._on_filter_change, width=DROPDOWN_WIDTH)
+            dd.set_selected(saved_filters.get(key, []))
+            dd.btn.grid(row=0, column=i * 2 + 1, sticky="ew")
+            self._sel_dropdowns[key] = dd
 
         tk.Label(tot_frame, text="Spelare", font=("", 9), anchor="e").grid(
-            row=0, column=0, padx=(0, 4), sticky="ew")
+            row=1, column=0, padx=(0, 4), pady=(4, 0), sticky="ew")
         var = tk.StringVar(value="-")
         self._info_vars["players"] = var
         ent = tk.Entry(tot_frame, textvariable=var, font=("", 9), width=18,
                        state="readonly", relief="solid", bd=1, readonlybackground="white")
-        ent.grid(row=0, column=1, sticky="ew")
+        ent.grid(row=1, column=1, pady=(4, 0), sticky="ew")
 
         self._refresh_dropdowns()
 
@@ -413,9 +428,9 @@ class APlayersGUI:
         self.notebook = ttk.Notebook(tab_frame)
         self.notebook.pack(fill=tk.BOTH, expand=True)
 
-        # --- Lista tab ---
+        # --- Ligor & Matcher tab ---
         lista_tab = tk.Frame(self.notebook)
-        self.notebook.add(lista_tab, text="Lista")
+        self.notebook.add(lista_tab, text="Ligor & Matcher")
 
         lista_container = tk.Frame(lista_tab)
         lista_container.pack(fill=tk.BOTH, expand=True)
@@ -432,6 +447,10 @@ class APlayersGUI:
         self._lista_style.configure("Grey.Treeview", background="#cccccc", fieldbackground="#cccccc")
         self.lista_tree.bind("<Button-1>", self._on_lista_header_click)
         self.lista_tree.bind("<Button-1>", self._on_lista_cell_click, add="+")
+
+        # --- Spelare detaljlista tab ---
+        player_detail_tab = tk.Frame(self.notebook)
+        self.notebook.add(player_detail_tab, text="Spelare detaljlista")
 
         # --- Konsol tab ---
         console_tab = tk.Frame(self.notebook)
@@ -806,6 +825,7 @@ class APlayersGUI:
             self._sel_dropdowns[key].set_options(values)
 
         self._refresh_player_dropdowns()
+        self._refresh_player_detail_dropdowns()
 
     def _matching_rows(self, sel):
         ligor = APlayers.load_ligor()
@@ -839,6 +859,33 @@ class APlayersGUI:
         ages = sorted({p[7] for p in self._matching_rows(age_sel) if p[7]},
                       key=lambda a: int(a) if a.isdigit() else 0)
         self._sel_dropdowns["age"].set_options(ages)
+
+    def _refresh_player_detail_dropdowns(self):
+        data = APlayers.load_data()
+        players = data.get("Players", {})
+        ages = sorted({str(p.get("Age", "")) for p in players.values() if p.get("Age")},
+                      key=lambda a: int(a) if a.isdigit() else 0)
+        countries = sorted({p.get("Country", "") for p in players.values() if p.get("Country")})
+        leagues = sorted({str(e.get("league", ""))
+                          for p in players.values()
+                          for e in p.get("Performance", [])
+                          if e.get("league")})
+        years = sorted({str(e.get("season", ""))
+                        for p in players.values()
+                        for e in p.get("Performance", [])
+                        if e.get("season")})
+        self._sel_dropdowns["player_age"].set_options(ages)
+        self._sel_dropdowns["player_country"].set_options(countries)
+        self._sel_dropdowns["player_league"].set_options(leagues)
+        self._sel_dropdowns["player_year"].set_options(years)
+
+    def _current_player_filter(self):
+        sel = {}
+        for key in APlayers.PLAYER_FILTER_KEYS:
+            dd = self._sel_dropdowns.get(key)
+            vals = dd.get_selected() if dd else []
+            sel[key] = vals if vals else None
+        return sel
 
     def _update_counts(self):
         data = APlayers.load_data()
@@ -1173,6 +1220,10 @@ class APlayersGUI:
 
     def _toggle_sound(self):
         APlayers.SOUND = self._sound_var.get()
+        APlayers.save_settings()
+
+    def _toggle_export_players(self):
+        APlayers.EXPORT_PLAYERS = self._export_players_var.get()
         APlayers.save_settings()
 
     def _settings_event_labels(self):
@@ -1580,7 +1631,9 @@ class APlayersGUI:
         try:
             written = APlayers.export_excel(
                 data, filepath, active_ids=active_ids, sel=sel,
-                columns=APlayers.visible_columns(self._columns, "excel")
+                columns=APlayers.visible_columns(self._columns, "excel"),
+                include_players=APlayers.EXPORT_PLAYERS,
+                player_sel=self._current_player_filter()
             )
             APlayers.log(f"Exporterade {written} rader till {filepath}", "BG")
             self.root.after(0, lambda fp=filepath: self._ask_open_folder(fp))

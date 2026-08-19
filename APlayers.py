@@ -22,6 +22,7 @@ RETRIES = 10
 PLAYER_AGE_CUTOFF = 18
 REFETCH_PLAYERS = False
 SOUND = True
+EXPORT_PLAYERS = True
 EVENT_LABELS = {
     "sb-aus": "Subbed out",
     "sb-ein": "Subbed in",
@@ -89,7 +90,7 @@ DEFAULT_LIGOR = [
 
 
 def load_settings():
-    global DELAY_MS, RETRIES, EVENT_LABELS, PLAYER_AGE_CUTOFF, REFETCH_PLAYERS, SOUND
+    global DELAY_MS, RETRIES, EVENT_LABELS, PLAYER_AGE_CUTOFF, REFETCH_PLAYERS, SOUND, EXPORT_PLAYERS
     if not os.path.exists(SETTINGS_PATH):
         save_settings()
         return
@@ -101,6 +102,7 @@ def load_settings():
         PLAYER_AGE_CUTOFF = cfg.getint("Settings", "player_age_cutoff", fallback=18)
         REFETCH_PLAYERS = cfg.getboolean("Settings", "refetch_players", fallback=False)
         SOUND = cfg.getboolean("Settings", "sound", fallback=True)
+        EXPORT_PLAYERS = cfg.getboolean("Settings", "export_players", fallback=True)
     except Exception:
         pass
     if cfg.has_section("EventLabels"):
@@ -116,6 +118,7 @@ def save_settings():
         "player_age_cutoff": str(PLAYER_AGE_CUTOFF),
         "refetch_players": str(REFETCH_PLAYERS),
         "sound": str(SOUND),
+        "export_players": str(EXPORT_PLAYERS),
     }
     cfg["EventLabels"] = EVENT_LABELS
     _write_config(cfg)
@@ -194,7 +197,10 @@ def _to_int(value):
         return 0
 
 
-FILTER_KEYS = ("responsible", "liga", "year", "country", "section", "position", "age")
+FILTER_KEYS = ("responsible", "liga", "year", "country", "section", "position", "age",
+               "player_age", "player_country", "player_league", "player_year")
+
+PLAYER_FILTER_KEYS = ("player_age", "player_country", "player_league", "player_year")
 
 
 def load_filters():
@@ -920,6 +926,18 @@ def format_duration(sec):
 
 CSV_HEADER = ["responsible", "liga", "country", "year", "matchday", "fixture", "team", "date", "time", "result", "section", "player_id", "number", "name", "role", "salary", "age", "nationality", "url", "events"]
 
+PERFORMANCE_COLUMNS = [
+    "goalsScoredTotal", "assists", "scorer", "ownGoalsScored",
+    "teamGoalsOnThePitch", "opponentGoalsOnThePitch",
+    "penaltyShooterAttempts", "penaltyShooterGoalsScored",
+    "penaltyShooterSaves", "penaltyShooterMisses",
+    "penaltyGoalkeeperAttempts", "penaltyGoalkeeperGoalsConceded",
+    "penaltyGoalkeeperSaves", "penaltyGoalkeeperMisses",
+    "yellowCardNet", "yellowCardGross", "playedMinutes",
+]
+
+PLAYER_EXPORT_HEADER = ["id", "name", "age", "club", "dob", "country", "height", "position", "league", "year"] + PERFORMANCE_COLUMNS
+
 COLUMN_KEYS = ["responsible", "liga", "country", "year", "matchday", "fixture", "team", "date", "time",
                "result", "section", "player_id", "number", "name", "role", "salary", "age",
                "nationality", "url", "events"]
@@ -1016,6 +1034,49 @@ def iter_export_rows(data, active_ids=None, sel=None):
     yield from _iter_export_rows(data, active_ids, sel)
 
 
+def _player_row(pid, p, entry):
+    row = [pid, p.get("Name", ""), p.get("Age", ""), p.get("Club", ""),
+           p.get("Dob", ""), p.get("Country", ""), p.get("Height", ""),
+           p.get("Position", "")]
+    if entry:
+        row.append(entry.get("league", ""))
+        row.append(entry.get("season", ""))
+        for k in PERFORMANCE_COLUMNS:
+            row.append(entry.get(k, ""))
+    else:
+        row.append("")
+        row.append("")
+        row.extend([""] * len(PERFORMANCE_COLUMNS))
+    return row
+
+
+def iter_player_export_rows(data, sel=None):
+    sel = sel or {}
+    for pid, p in data.get("Players", {}).items():
+        age = str(p.get("Age", ""))
+        country = p.get("Country", "")
+        if sel.get("player_age") and age not in sel["player_age"]:
+            continue
+        if sel.get("player_country") and country not in sel["player_country"]:
+            continue
+
+        perf = p.get("Performance", [])
+        if not perf:
+            if sel.get("player_league") or sel.get("player_year"):
+                continue
+            yield _player_row(pid, p, None)
+            continue
+
+        for entry in perf:
+            league = str(entry.get("league", ""))
+            season = str(entry.get("season", ""))
+            if sel.get("player_league") and league not in sel["player_league"]:
+                continue
+            if sel.get("player_year") and season not in sel["player_year"]:
+                continue
+            yield _player_row(pid, p, entry)
+
+
 def export_csv(data, output_path, active_ids=None, sel=None):
     written = 0
     with open(output_path, "w", encoding="utf-8", newline="") as f:
@@ -1027,7 +1088,7 @@ def export_csv(data, output_path, active_ids=None, sel=None):
     return written
 
 
-def export_excel(data, output_path, active_ids=None, sel=None, columns=None):
+def export_excel(data, output_path, active_ids=None, sel=None, columns=None, include_players=False, player_sel=None):
     try:
         import openpyxl
         from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -1111,9 +1172,41 @@ def export_excel(data, output_path, active_ids=None, sel=None, columns=None):
 
         ws.auto_filter.ref = f"A1:{get_column_letter(len(header))}{row_num - 1}"
 
+    if include_players:
+        player_ws = wb.create_sheet(title="spelare")
+        player_ws.sheet_properties.tabColor = "7030A0"
+        player_rows = list(iter_player_export_rows(data, player_sel))
+
+        for col_idx, h in enumerate(PLAYER_EXPORT_HEADER, 1):
+            cell = player_ws.cell(row=1, column=col_idx, value=h)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = header_alignment
+            cell.border = header_border
+
+        player_ws.freeze_panes = "A2"
+
+        player_row_num = 2
+        player_col_max = [len(h) for h in PLAYER_EXPORT_HEADER]
+        for prow in player_rows:
+            for col_idx, value in enumerate(prow):
+                cell = player_ws.cell(row=player_row_num, column=col_idx + 1, value=value)
+                cell.alignment = cell_alignment
+                cell.border = thin_border
+                v_len = len(str(value)) if value is not None else 0
+                if v_len > player_col_max[col_idx]:
+                    player_col_max[col_idx] = v_len
+            player_row_num += 1
+
+        for col_idx, max_w in enumerate(player_col_max):
+            col_letter = get_column_letter(col_idx + 1)
+            player_ws.column_dimensions[col_letter].width = min(max_w + 3, 150)
+
+        player_ws.auto_filter.ref = f"A1:{get_column_letter(len(PLAYER_EXPORT_HEADER))}{player_row_num - 1}"
+
     summary_ws = wb.create_sheet(title="Summary")
     summary_ws.sheet_properties.tabColor = "548235"
-    wb.move_sheet(summary_ws, offset=-sheet_count)
+    wb.move_sheet(summary_ws, offset=-(sheet_count + (1 if include_players else 0)))
 
     summary_header_font = Font(name="Calibri", bold=True, color="FFFFFF", size=11)
     summary_header_fill = PatternFill(start_color="548235", end_color="548235", fill_type="solid")
