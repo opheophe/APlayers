@@ -298,6 +298,7 @@ class APlayersGUI:
 
         about_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Om", menu=about_menu)
+        about_menu.add_command(label="Om", command=self._about_app)
         about_menu.add_command(label="Github", command=self._about_github)
 
         # --- Progress bar area ---
@@ -628,6 +629,30 @@ class APlayersGUI:
             subprocess.Popen(["open", url])
         else:
             subprocess.Popen(["xdg-open", url])
+
+    def _about_app(self):
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Om")
+        dlg.resizable(False, False)
+        self._show_dialog(dlg, modal=True)
+        if os.path.exists(ICON_PATH):
+            dlg.iconbitmap(ICON_PATH)
+
+        text = ("APlayers hämtar ligor, matcher och lineups från Transfermarkt.\n"
+                "Hämtar även spelardetaljer som profil, prestation och statistik.\n"
+                "Allt kan filtreras, visas i listor och exporteras till Excel.")
+        frm = tk.Frame(dlg, padx=20, pady=16)
+        frm.pack()
+        tk.Label(frm, text="APlayers", font=("", 11, "bold")).pack(pady=(0, 8))
+        tk.Label(frm, text=text, font=("", 9), justify="left").pack()
+        tk.Button(frm, text="Stäng", command=dlg.destroy, padx=16, pady=4, font=("", 9)).pack(pady=(12, 0))
+
+        dlg.update_idletasks()
+        w = dlg.winfo_width()
+        h = dlg.winfo_height()
+        x = self.root.winfo_x() + (self.root.winfo_width() - w) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - h) // 2
+        dlg.geometry(f"+{x}+{y}")
 
     def _about_github(self):
         dlg = tk.Toplevel(self.root)
