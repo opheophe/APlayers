@@ -273,24 +273,28 @@ class APlayersGUI:
         menubar.add_cascade(label="Inställningar", menu=settings_menu)
         settings_menu.add_command(label="Fördröjning...", command=self._settings_delay)
         settings_menu.add_command(label="Försök...", command=self._settings_retries)
+        settings_menu.add_separator()
+
+        self._sound_var = tk.BooleanVar(value=APlayers.SOUND)
+        settings_menu.add_checkbutton(label="Ljud", variable=self._sound_var,
+                                      command=self._toggle_sound)
+        settings_menu.add_command(label="Event labels...", command=self._settings_event_labels)
+        settings_menu.add_separator()
+
         settings_menu.add_command(label="Spelar ålder-cutoff...", command=self._settings_age_cutoff)
         self._refetch_players_var = tk.BooleanVar(value=APlayers.REFETCH_PLAYERS)
         settings_menu.add_checkbutton(label="Hämta spelare på nytt", variable=self._refetch_players_var,
                                       command=self._toggle_refetch_players)
         settings_menu.add_separator()
 
-        self._sound_var = tk.BooleanVar(value=APlayers.SOUND)
-        settings_menu.add_checkbutton(label="Ljud", variable=self._sound_var,
-                                      command=self._toggle_sound)
         self._export_ligor_matches_var = tk.BooleanVar(value=APlayers.EXPORT_LIGOR_MATCHES)
         settings_menu.add_checkbutton(label="Exportera Ligor & Matcher", variable=self._export_ligor_matches_var,
                                       command=self._toggle_export_ligor_matches)
         self._export_players_var = tk.BooleanVar(value=APlayers.EXPORT_PLAYERS)
-        settings_menu.add_checkbutton(label="Exportera spelare", variable=self._export_players_var,
+        settings_menu.add_checkbutton(label="Exportera Spelare Detaljlista", variable=self._export_players_var,
                                       command=self._toggle_export_players)
-        settings_menu.add_command(label="Event labels...", command=self._settings_event_labels)
-        settings_menu.add_command(label="Kolumner matcher & Ligor", command=self._settings_columns)
-        settings_menu.add_command(label="Kolumner Spelare detaljlista", command=self._settings_player_columns)
+        settings_menu.add_command(label="Kolumner Ligor och Matcher", command=self._settings_columns)
+        settings_menu.add_command(label="Kolumner Spelare Detaljlista", command=self._settings_player_columns)
 
         about_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Om", menu=about_menu)
@@ -988,26 +992,20 @@ class APlayersGUI:
 
     def _refresh_player_detail_dropdowns(self):
         data = APlayers.load_data()
-        players = data.get("Players", {})
-        ages = sorted({str(p.get("Age", "")) for p in players.values() if p.get("Age")},
-                      key=lambda a: int(a) if a.isdigit() else 0)
-        countries = sorted({p.get("Country", "") for p in players.values() if p.get("Country")})
-        clubs = sorted({p.get("Club", "") for p in players.values() if p.get("Club")})
-        positions = sorted({p.get("Position", "") for p in players.values() if p.get("Position")})
-        leagues = sorted({str(e.get("league", ""))
-                          for p in players.values()
-                          for e in p.get("Performance", [])
-                          if e.get("league")})
-        years = sorted({str(e.get("season", ""))
-                        for p in players.values()
-                        for e in p.get("Performance", [])
-                        if e.get("season")})
-        self._sel_dropdowns["player_age"].set_options(ages)
-        self._sel_dropdowns["player_country"].set_options(countries)
-        self._sel_dropdowns["player_club"].set_options(clubs)
-        self._sel_dropdowns["player_position"].set_options(positions)
-        self._sel_dropdowns["player_league"].set_options(leagues)
-        self._sel_dropdowns["player_year"].set_options(years)
+        sel = self._current_player_filter()
+        for key in APlayers.PLAYER_FILTER_KEYS:
+            col_key = key[len("player_"):]
+            if col_key not in APlayers.PLAYER_COLUMN_KEYS:
+                continue
+            idx = APlayers.PLAYER_COLUMN_KEYS.index(col_key)
+            excl = dict(sel)
+            excl[key] = None
+            values = {str(row[idx]) for row in APlayers.iter_player_export_rows(data, excl) if row[idx]}
+            if col_key == "age":
+                values = sorted(values, key=lambda a: int(a) if a.isdigit() else 0)
+            else:
+                values = sorted(values)
+            self._sel_dropdowns[key].set_options(values)
 
     def _current_player_filter(self):
         sel = {}

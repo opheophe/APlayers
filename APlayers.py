@@ -958,7 +958,7 @@ PLAYER_COLUMN_LABELS = {
     "name": "Name",
     "age": "Age",
     "club": "Club",
-    "dob": "Dob",
+    "dob": "Date of birth",
     "country": "Country",
     "height": "Height",
     "position": "Position",
@@ -968,9 +968,46 @@ PLAYER_COLUMN_LABELS = {
 for _k in PLAYER_PERF_KEYS:
     PLAYER_COLUMN_LABELS[_k] = _k
 
-PLAYER_DEFAULT_COLUMNS = {key: {"lista": key not in EXTRA_PERFORMANCE_COLUMNS,
-                                "excel": key not in EXTRA_PERFORMANCE_COLUMNS}
-                          for key in PLAYER_COLUMN_KEYS}
+PLAYER_DEFAULT_COLUMNS = {
+    "id": {"lista": False, "excel": True},
+    "name": {"lista": True, "excel": True},
+    "age": {"lista": True, "excel": True},
+    "club": {"lista": True, "excel": True},
+    "dob": {"lista": True, "excel": True},
+    "country": {"lista": True, "excel": True},
+    "height": {"lista": False, "excel": True},
+    "position": {"lista": True, "excel": True},
+    "league": {"lista": True, "excel": True},
+    "year": {"lista": True, "excel": True},
+    "goalsScoredTotal": {"lista": True, "excel": True},
+    "assists": {"lista": True, "excel": True},
+    "scorer": {"lista": False, "excel": True},
+    "ownGoalsScored": {"lista": False, "excel": True},
+    "teamGoalsOnThePitch": {"lista": False, "excel": True},
+    "opponentGoalsOnThePitch": {"lista": False, "excel": True},
+    "penaltyShooterAttempts": {"lista": False, "excel": True},
+    "penaltyShooterGoalsScored": {"lista": False, "excel": True},
+    "penaltyShooterSaves": {"lista": False, "excel": True},
+    "penaltyShooterMisses": {"lista": False, "excel": True},
+    "penaltyGoalkeeperAttempts": {"lista": False, "excel": True},
+    "penaltyGoalkeeperGoalsConceded": {"lista": False, "excel": True},
+    "penaltyGoalkeeperSaves": {"lista": False, "excel": True},
+    "penaltyGoalkeeperMisses": {"lista": False, "excel": True},
+    "yellowCardNet": {"lista": False, "excel": True},
+    "yellowCardGross": {"lista": False, "excel": True},
+    "playedMinutes": {"lista": True, "excel": True},
+    "games": {"lista": True, "excel": True},
+    "shirtNumber": {"lista": False, "excel": False},
+    "positionId": {"lista": False, "excel": False},
+    "primaryClubId": {"lista": False, "excel": False},
+    "injuryId": {"lista": False, "excel": False},
+    "absenceId": {"lista": False, "excel": False},
+    "ageDiscrepancyDays": {"lista": False, "excel": False},
+    "pointsOnThePitch": {"lista": False, "excel": False},
+    "fairPlayPoints": {"lista": False, "excel": False},
+    "isCaptain": {"lista": False, "excel": False},
+    "isStarting": {"lista": False, "excel": False},
+}
 
 
 def load_player_columns():
