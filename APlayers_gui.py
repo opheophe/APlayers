@@ -243,6 +243,12 @@ class APlayersGUI:
         self._lista_sort_reverse = False
         self._lista_queue = queue.Queue()
         self._lista_url_by_iid = {}
+        self._pdetail_generation = 0
+        self._pdetail_columns = []
+        self._pdetail_rows = []
+        self._pdetail_sort_col = None
+        self._pdetail_sort_reverse = False
+        self._pdetail_queue = queue.Queue()
 
         # --- Menu bar ---
         menubar = tk.Menu(self.root)
@@ -276,6 +282,9 @@ class APlayersGUI:
         self._sound_var = tk.BooleanVar(value=APlayers.SOUND)
         settings_menu.add_checkbutton(label="Ljud", variable=self._sound_var,
                                       command=self._toggle_sound)
+        self._export_ligor_matches_var = tk.BooleanVar(value=APlayers.EXPORT_LIGOR_MATCHES)
+        settings_menu.add_checkbutton(label="Exportera Ligor & Matcher", variable=self._export_ligor_matches_var,
+                                      command=self._toggle_export_ligor_matches)
         self._export_players_var = tk.BooleanVar(value=APlayers.EXPORT_PLAYERS)
         settings_menu.add_checkbutton(label="Exportera spelare", variable=self._export_players_var,
                                       command=self._toggle_export_players)
@@ -384,13 +393,22 @@ class APlayersGUI:
             dd.btn.grid(row=0, column=i * 2 + 1, sticky="ew")
             self._sel_dropdowns[key] = dd
 
+        player_detail_filters2 = [("player_club", "Club"), ("player_position", "Position")]
+        for i, (key, text) in enumerate(player_detail_filters2):
+            tk.Label(tot_frame, text=text, font=("", 9), anchor="e").grid(
+                row=1, column=i * 2, padx=(0 if i == 0 else 12, 4), pady=(4, 0), sticky="ew")
+            dd = MultiSelectDropdown(tot_frame, callback=self._on_filter_change, width=DROPDOWN_WIDTH)
+            dd.set_selected(saved_filters.get(key, []))
+            dd.btn.grid(row=1, column=i * 2 + 1, pady=(4, 0), sticky="ew")
+            self._sel_dropdowns[key] = dd
+
         tk.Label(tot_frame, text="Spelare", font=("", 9), anchor="e").grid(
-            row=1, column=0, padx=(0, 4), pady=(4, 0), sticky="ew")
+            row=2, column=0, padx=(0, 4), pady=(4, 0), sticky="ew")
         var = tk.StringVar(value="-")
         self._info_vars["players"] = var
         ent = tk.Entry(tot_frame, textvariable=var, font=("", 9), width=18,
                        state="readonly", relief="solid", bd=1, readonlybackground="white")
-        ent.grid(row=1, column=1, pady=(4, 0), sticky="ew")
+        ent.grid(row=2, column=1, pady=(4, 0), sticky="ew")
 
         self._refresh_dropdowns()
 
@@ -454,6 +472,18 @@ class APlayersGUI:
         player_detail_tab = tk.Frame(self.notebook)
         self.notebook.add(player_detail_tab, text="Spelare detaljlista")
 
+        pdetail_container = tk.Frame(player_detail_tab)
+        pdetail_container.pack(fill=tk.BOTH, expand=True)
+
+        self.pdetail_tree = ttk.Treeview(pdetail_container, columns=(), show="headings")
+        pvsb = ttk.Scrollbar(pdetail_container, orient="vertical", command=self.pdetail_tree.yview)
+        phsb = ttk.Scrollbar(pdetail_container, orient="horizontal", command=self.pdetail_tree.xview)
+        self.pdetail_tree.configure(yscrollcommand=pvsb.set, xscrollcommand=phsb.set)
+        pvsb.pack(side=tk.RIGHT, fill=tk.Y)
+        phsb.pack(side=tk.BOTTOM, fill=tk.X)
+        self.pdetail_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.pdetail_tree.bind("<Button-1>", self._on_pdetail_header_click)
+
         # --- Konsol tab ---
         console_tab = tk.Frame(self.notebook)
         self.notebook.add(console_tab, text="Konsol")
@@ -478,6 +508,7 @@ class APlayersGUI:
         # Start queue poller
         self._poll_queue()
         self._poll_lista()
+        self._poll_player_detail()
 
     # --- Console / Progress helpers ---
     def log_console(self, msg, color=None):
@@ -630,6 +661,7 @@ class APlayersGUI:
             APlayers.log(f"Fel vid borttagning: {e}", "BR")
         self._update_counts()
         self._reload_lista()
+        self._reload_player_detail()
 
     def _open_link(self, event):
         idx = self.console.index(f"@{event.x},{event.y}")
@@ -659,6 +691,7 @@ class APlayersGUI:
         self._update_counts()
         self._save_filters()
         self._reload_lista()
+        self._reload_player_detail()
 
     def _save_filters(self):
         APlayers.save_filters({key: dd.get_selected() for key, dd in self._sel_dropdowns.items()})
@@ -670,6 +703,7 @@ class APlayersGUI:
         self._update_counts()
         self._save_filters()
         self._reload_lista()
+        self._reload_player_detail()
 
     def _set_lista_loading(self, loading):
         self.lista_tree.configure(style="Grey.Treeview" if loading else "")
@@ -786,6 +820,96 @@ class APlayersGUI:
             if url:
                 self._open_url(url)
 
+    def _set_pdetail_loading(self, loading):
+        self.pdetail_tree.configure(style="Grey.Treeview" if loading else "")
+
+    def _reload_player_detail(self):
+        self._pdetail_generation += 1
+        gen = self._pdetail_generation
+        player_sel = self._current_player_filter()
+        columns = APlayers.visible_player_columns(self._player_columns, "lista")
+        self._set_pdetail_loading(True)
+        t = threading.Thread(target=self._pdetail_worker, args=(gen, player_sel, columns), daemon=True)
+        t.start()
+
+    def _pdetail_worker(self, gen, player_sel, columns):
+        data = APlayers.load_data()
+        indices = [APlayers.PLAYER_COLUMN_KEYS.index(k) for k in columns]
+        rows = []
+        for full in APlayers.iter_player_export_rows(data, player_sel):
+            if gen != self._pdetail_generation:
+                return
+            rows.append([full[i] for i in indices])
+        self._pdetail_queue.put((gen, columns, rows))
+
+    def _poll_player_detail(self):
+        try:
+            while True:
+                gen, columns, rows = self._pdetail_queue.get_nowait()
+                if gen == self._pdetail_generation:
+                    self._apply_pdetail(gen, columns, rows)
+        except queue.Empty:
+            pass
+        self.root.after(150, self._poll_player_detail)
+
+    def _apply_pdetail(self, gen, columns, rows):
+        if gen != self._pdetail_generation:
+            return
+        self._set_pdetail_loading(False)
+        self._pdetail_columns = columns
+        self._pdetail_rows = rows
+        self.pdetail_tree["columns"] = columns
+        for key in columns:
+            self.pdetail_tree.heading(key, text=APlayers.PLAYER_COLUMN_LABELS.get(key, key))
+            self.pdetail_tree.column(key, minwidth=20, stretch=False)
+        self._populate_pdetail()
+        self._autosize_pdetail_columns()
+
+    def _autosize_pdetail_columns(self):
+        font = tkfont.nametofont("TkDefaultFont")
+        for key in self._pdetail_columns:
+            idx = self._pdetail_columns.index(key)
+            max_w = font.measure(APlayers.PLAYER_COLUMN_LABELS.get(key, key)) + 24
+            for r in self._pdetail_rows:
+                w = font.measure(str(r[idx]))
+                if w > max_w:
+                    max_w = w
+            self.pdetail_tree.column(key, width=max_w + 16, minwidth=20, stretch=False)
+
+    def _populate_pdetail(self):
+        tree = self.pdetail_tree
+        tree.delete(*tree.get_children())
+        rows = self._pdetail_rows
+        col = self._pdetail_sort_col
+        if col in self._pdetail_columns:
+            idx = self._pdetail_columns.index(col)
+
+            def key(r):
+                v = r[idx]
+                try:
+                    return (0, float(v))
+                except (ValueError, TypeError):
+                    return (1, str(v).lower())
+
+            rows = sorted(rows, key=key, reverse=self._pdetail_sort_reverse)
+        for r in rows:
+            tree.insert("", "end", values=list(r))
+
+    def _on_pdetail_header_click(self, event):
+        if self.pdetail_tree.identify("region", event.x, event.y) != "heading":
+            return
+        col_id = self.pdetail_tree.identify_column(event.x)
+        idx = int(col_id[1:]) - 1
+        if idx < 0 or idx >= len(self._pdetail_columns):
+            return
+        key = self._pdetail_columns[idx]
+        if self._pdetail_sort_col == key:
+            self._pdetail_sort_reverse = not self._pdetail_sort_reverse
+        else:
+            self._pdetail_sort_col = key
+            self._pdetail_sort_reverse = False
+        self._populate_pdetail()
+
     def _show_dialog(self, dlg, modal=False):
         dlg.transient(self.root)
         dlg.lift()
@@ -868,6 +992,8 @@ class APlayersGUI:
         ages = sorted({str(p.get("Age", "")) for p in players.values() if p.get("Age")},
                       key=lambda a: int(a) if a.isdigit() else 0)
         countries = sorted({p.get("Country", "") for p in players.values() if p.get("Country")})
+        clubs = sorted({p.get("Club", "") for p in players.values() if p.get("Club")})
+        positions = sorted({p.get("Position", "") for p in players.values() if p.get("Position")})
         leagues = sorted({str(e.get("league", ""))
                           for p in players.values()
                           for e in p.get("Performance", [])
@@ -878,6 +1004,8 @@ class APlayersGUI:
                         if e.get("season")})
         self._sel_dropdowns["player_age"].set_options(ages)
         self._sel_dropdowns["player_country"].set_options(countries)
+        self._sel_dropdowns["player_club"].set_options(clubs)
+        self._sel_dropdowns["player_position"].set_options(positions)
         self._sel_dropdowns["player_league"].set_options(leagues)
         self._sel_dropdowns["player_year"].set_options(years)
 
@@ -1264,6 +1392,7 @@ class APlayersGUI:
             APlayers.save_player_columns(cols)
             self._player_columns = cols
             dlg.destroy()
+            self._reload_player_detail()
 
         tk.Button(frm, text="Spara", command=save_columns, padx=16, pady=4,
                   font=("", 9, "bold")).grid(row=len(APlayers.PLAYER_COLUMN_KEYS) + 1, column=0, columnspan=4, pady=(10, 0))
@@ -1281,6 +1410,10 @@ class APlayersGUI:
 
     def _toggle_export_players(self):
         APlayers.EXPORT_PLAYERS = self._export_players_var.get()
+        APlayers.save_settings()
+
+    def _toggle_export_ligor_matches(self):
+        APlayers.EXPORT_LIGOR_MATCHES = self._export_ligor_matches_var.get()
         APlayers.save_settings()
 
     def _settings_event_labels(self):
@@ -1549,6 +1682,7 @@ class APlayersGUI:
             self.root.after(0, self._refresh_dropdowns)
             self.root.after(0, self._update_counts)
             self.root.after(0, self._reload_lista)
+            self.root.after(0, self._reload_player_detail)
             put_progress(0, 1, "Redo")
 
     # --- Worker: Hamta matcher ---
@@ -1613,6 +1747,7 @@ class APlayersGUI:
             self.root.after(0, self._refresh_dropdowns)
             self.root.after(0, self._update_counts)
             self.root.after(0, self._reload_lista)
+            self.root.after(0, self._reload_player_detail)
             put_progress(0, 1, "Redo")
 
     # --- Worker: Hamta spelare ---
@@ -1644,6 +1779,7 @@ class APlayersGUI:
             self.root.after(0, self._refresh_dropdowns)
             self.root.after(0, self._update_counts)
             self.root.after(0, self._reload_lista)
+            self.root.after(0, self._reload_player_detail)
             put_progress(0, 1, "Redo")
 
     # --- Worker: Export excel ---
@@ -1656,8 +1792,11 @@ class APlayersGUI:
             if APlayers.match_filter_league(league, active_ids, sel)
             for gid, game in league.get("Games", {}).items() if game.get("Status") == "success"
         )
-        if success_count == 0:
-            APlayers.log("Inga hämtade matcher att exportera.", "Y")
+        has_players = bool(data.get("Players", {}))
+        can_export_matches = APlayers.EXPORT_LIGOR_MATCHES and success_count > 0
+        can_export_players = APlayers.EXPORT_PLAYERS and has_players
+        if not (can_export_matches or can_export_players):
+            APlayers.log("Inget att exportera.", "Y")
             return
 
         now = datetime.now()
@@ -1691,7 +1830,8 @@ class APlayersGUI:
                 columns=APlayers.visible_columns(self._columns, "excel"),
                 include_players=APlayers.EXPORT_PLAYERS,
                 player_sel=self._current_player_filter(),
-                player_columns=APlayers.visible_player_columns(self._player_columns, "excel")
+                player_columns=APlayers.visible_player_columns(self._player_columns, "excel"),
+                include_matches=APlayers.EXPORT_LIGOR_MATCHES
             )
             APlayers.log(f"Exporterade {written} rader till {filepath}", "BG")
             self.root.after(0, lambda fp=filepath: self._ask_open_folder(fp))
@@ -1729,6 +1869,7 @@ def run():
     app.log_console("=== APlayers redo ===", "C")
     app._update_counts()
     app._reload_lista()
+    app._reload_player_detail()
     app.run()
 
 

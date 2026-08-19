@@ -23,6 +23,7 @@ PLAYER_AGE_CUTOFF = 18
 REFETCH_PLAYERS = False
 SOUND = True
 EXPORT_PLAYERS = True
+EXPORT_LIGOR_MATCHES = True
 EVENT_LABELS = {
     "sb-aus": "Subbed out",
     "sb-ein": "Subbed in",
@@ -90,7 +91,7 @@ DEFAULT_LIGOR = [
 
 
 def load_settings():
-    global DELAY_MS, RETRIES, EVENT_LABELS, PLAYER_AGE_CUTOFF, REFETCH_PLAYERS, SOUND, EXPORT_PLAYERS
+    global DELAY_MS, RETRIES, EVENT_LABELS, PLAYER_AGE_CUTOFF, REFETCH_PLAYERS, SOUND, EXPORT_PLAYERS, EXPORT_LIGOR_MATCHES
     if not os.path.exists(SETTINGS_PATH):
         save_settings()
         return
@@ -103,6 +104,7 @@ def load_settings():
         REFETCH_PLAYERS = cfg.getboolean("Settings", "refetch_players", fallback=False)
         SOUND = cfg.getboolean("Settings", "sound", fallback=True)
         EXPORT_PLAYERS = cfg.getboolean("Settings", "export_players", fallback=True)
+        EXPORT_LIGOR_MATCHES = cfg.getboolean("Settings", "export_ligor_matches", fallback=True)
     except Exception:
         pass
     if cfg.has_section("EventLabels"):
@@ -119,6 +121,7 @@ def save_settings():
         "refetch_players": str(REFETCH_PLAYERS),
         "sound": str(SOUND),
         "export_players": str(EXPORT_PLAYERS),
+        "export_ligor_matches": str(EXPORT_LIGOR_MATCHES),
     }
     cfg["EventLabels"] = EVENT_LABELS
     _write_config(cfg)
@@ -198,9 +201,11 @@ def _to_int(value):
 
 
 FILTER_KEYS = ("responsible", "liga", "year", "country", "section", "position", "age",
-               "player_age", "player_country", "player_league", "player_year")
+               "player_age", "player_country", "player_league", "player_year",
+               "player_club", "player_position")
 
-PLAYER_FILTER_KEYS = ("player_age", "player_country", "player_league", "player_year")
+PLAYER_FILTER_KEYS = ("player_age", "player_country", "player_league", "player_year",
+                      "player_club", "player_position")
 
 
 def load_filters():
@@ -936,7 +941,15 @@ PERFORMANCE_COLUMNS = [
     "yellowCardNet", "yellowCardGross", "playedMinutes",
 ]
 
-PLAYER_EXPORT_HEADER = ["id", "name", "age", "club", "dob", "country", "height", "position", "league", "year"] + PERFORMANCE_COLUMNS
+EXTRA_PERFORMANCE_COLUMNS = [
+    "games", "shirtNumber", "positionId", "primaryClubId",
+    "injuryId", "absenceId", "ageDiscrepancyDays",
+    "pointsOnThePitch", "fairPlayPoints", "isCaptain", "isStarting",
+]
+
+PLAYER_PERF_KEYS = PERFORMANCE_COLUMNS + EXTRA_PERFORMANCE_COLUMNS
+
+PLAYER_EXPORT_HEADER = ["id", "name", "age", "club", "dob", "country", "height", "position", "league", "year"] + PLAYER_PERF_KEYS
 
 PLAYER_COLUMN_KEYS = list(PLAYER_EXPORT_HEADER)
 
@@ -952,10 +965,12 @@ PLAYER_COLUMN_LABELS = {
     "league": "League",
     "year": "Year",
 }
-for _k in PERFORMANCE_COLUMNS:
+for _k in PLAYER_PERF_KEYS:
     PLAYER_COLUMN_LABELS[_k] = _k
 
-PLAYER_DEFAULT_COLUMNS = {key: {"lista": True, "excel": True} for key in PLAYER_COLUMN_KEYS}
+PLAYER_DEFAULT_COLUMNS = {key: {"lista": key not in EXTRA_PERFORMANCE_COLUMNS,
+                                "excel": key not in EXTRA_PERFORMANCE_COLUMNS}
+                          for key in PLAYER_COLUMN_KEYS}
 
 
 def load_player_columns():
@@ -1100,12 +1115,12 @@ def _player_row(pid, p, entry):
     if entry:
         row.append(entry.get("league", ""))
         row.append(entry.get("season", ""))
-        for k in PERFORMANCE_COLUMNS:
+        for k in PLAYER_PERF_KEYS:
             row.append(entry.get(k, ""))
     else:
         row.append("")
         row.append("")
-        row.extend([""] * len(PERFORMANCE_COLUMNS))
+        row.extend([""] * len(PLAYER_PERF_KEYS))
     return row
 
 
@@ -1114,9 +1129,15 @@ def iter_player_export_rows(data, sel=None):
     for pid, p in data.get("Players", {}).items():
         age = str(p.get("Age", ""))
         country = p.get("Country", "")
+        club = p.get("Club", "")
+        position = p.get("Position", "")
         if sel.get("player_age") and age not in sel["player_age"]:
             continue
         if sel.get("player_country") and country not in sel["player_country"]:
+            continue
+        if sel.get("player_club") and club not in sel["player_club"]:
+            continue
+        if sel.get("player_position") and position not in sel["player_position"]:
             continue
 
         perf = p.get("Performance", [])
@@ -1147,7 +1168,7 @@ def export_csv(data, output_path, active_ids=None, sel=None):
     return written
 
 
-def export_excel(data, output_path, active_ids=None, sel=None, columns=None, include_players=False, player_sel=None, player_columns=None):
+def export_excel(data, output_path, active_ids=None, sel=None, columns=None, include_players=False, player_sel=None, player_columns=None, include_matches=True):
     try:
         import openpyxl
         from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -1177,59 +1198,86 @@ def export_excel(data, output_path, active_ids=None, sel=None, columns=None, inc
 
     TAB_COLORS = ["FF4444", "FF8C00", "FFD700", "44CC44", "4488FF", "CC44CC", "00CCCC", "FF69B4"]
 
-    if columns is None:
-        columns = COLUMN_KEYS
-    header = [COLUMN_LABELS[k] for k in columns]
-    col_indices = [COLUMN_KEYS.index(k) for k in columns]
-    url_col = (columns.index("url") + 1) if "url" in columns else None
-
-    matches_by_user = {}
-    for row in _iter_export_rows(data, active_ids, sel):
-        responsible = row[0]
-        if responsible not in matches_by_user:
-            matches_by_user[responsible] = []
-        matches_by_user[responsible].append(row)
-
     total_written = 0
     sheet_count = 0
+    matches_by_user = {}
 
-    for user in sorted(matches_by_user.keys()):
-        safe_name = user[:31]
-        ws = wb.create_sheet(title=safe_name)
-        ws.sheet_properties.tabColor = TAB_COLORS[(sheet_count) % len(TAB_COLORS)]
-        sheet_count += 1
+    if include_matches:
+        if columns is None:
+            columns = COLUMN_KEYS
+        header = [COLUMN_LABELS[k] for k in columns]
+        col_indices = [COLUMN_KEYS.index(k) for k in columns]
+        url_col = (columns.index("url") + 1) if "url" in columns else None
 
-        for col_idx, h in enumerate(header, 1):
-            cell = ws.cell(row=1, column=col_idx, value=h)
-            cell.font = header_font
-            cell.fill = header_fill
+        for row in _iter_export_rows(data, active_ids, sel):
+            responsible = row[0]
+            if responsible not in matches_by_user:
+                matches_by_user[responsible] = []
+            matches_by_user[responsible].append(row)
+
+        for user in sorted(matches_by_user.keys()):
+            safe_name = user[:31]
+            ws = wb.create_sheet(title=safe_name)
+            ws.sheet_properties.tabColor = TAB_COLORS[(sheet_count) % len(TAB_COLORS)]
+            sheet_count += 1
+
+            for col_idx, h in enumerate(header, 1):
+                cell = ws.cell(row=1, column=col_idx, value=h)
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = header_alignment
+                cell.border = header_border
+
+            ws.freeze_panes = "A2"
+
+            row_num = 2
+            col_max = [len(h) for h in header]
+            for full_row in matches_by_user[user]:
+                values = [full_row[i] for i in col_indices]
+                for col_idx, value in enumerate(values):
+                    cell = ws.cell(row=row_num, column=col_idx + 1, value=value)
+                    cell.alignment = cell_alignment
+                    cell.border = thin_border
+                    v_len = len(str(value)) if value is not None else 0
+                    if v_len > col_max[col_idx]:
+                        col_max[col_idx] = v_len
+                match_url = full_row[18] if len(full_row) > 18 else ""
+                if match_url and url_col:
+                    ws.cell(row=row_num, column=url_col).hyperlink = match_url
+                row_num += 1
+                total_written += 1
+
+            for col_idx, max_w in enumerate(col_max):
+                col_letter = get_column_letter(col_idx + 1)
+                ws.column_dimensions[col_letter].width = min(max_w + 3, 150)
+
+            ws.auto_filter.ref = f"A1:{get_column_letter(len(header))}{row_num - 1}"
+
+        summary_ws = wb.create_sheet(title="Summary")
+        summary_ws.sheet_properties.tabColor = "548235"
+        wb.move_sheet(summary_ws, offset=-sheet_count)
+
+        summary_header_font = Font(name="Calibri", bold=True, color="FFFFFF", size=11)
+        summary_header_fill = PatternFill(start_color="548235", end_color="548235", fill_type="solid")
+        for col_idx, h in enumerate(["Responsible", "Matches", "Players"], 1):
+            cell = summary_ws.cell(row=1, column=col_idx, value=h)
+            cell.font = summary_header_font
+            cell.fill = summary_header_fill
             cell.alignment = header_alignment
             cell.border = header_border
 
-        ws.freeze_panes = "A2"
+        summary_row = 2
+        for user in sorted(matches_by_user.keys()):
+            user_rows = matches_by_user[user]
+            count = len(user_rows)
+            summary_ws.cell(row=summary_row, column=1, value=user).border = thin_border
+            summary_ws.cell(row=summary_row, column=2, value=count).border = thin_border
+            summary_row += 1
 
-        row_num = 2
-        col_max = [len(h) for h in header]
-        for full_row in matches_by_user[user]:
-            values = [full_row[i] for i in col_indices]
-            for col_idx, value in enumerate(values):
-                cell = ws.cell(row=row_num, column=col_idx + 1, value=value)
-                cell.alignment = cell_alignment
-                cell.border = thin_border
-                v_len = len(str(value)) if value is not None else 0
-                if v_len > col_max[col_idx]:
-                    col_max[col_idx] = v_len
-            match_url = full_row[18] if len(full_row) > 18 else ""
-            if match_url and url_col:
-                ws.cell(row=row_num, column=url_col).hyperlink = match_url
-            row_num += 1
-            total_written += 1
-
-        for col_idx, max_w in enumerate(col_max):
-            col_letter = get_column_letter(col_idx + 1)
-            ws.column_dimensions[col_letter].width = min(max_w + 3, 150)
-
-        ws.auto_filter.ref = f"A1:{get_column_letter(len(header))}{row_num - 1}"
+        summary_ws.column_dimensions["A"].width = 18
+        summary_ws.column_dimensions["B"].width = 10
+        summary_ws.column_dimensions["C"].width = 12
+        summary_ws.freeze_panes = "A2"
 
     if include_players:
         player_ws = wb.create_sheet(title="Spelare Detaljlista")
@@ -1260,38 +1308,13 @@ def export_excel(data, output_path, active_ids=None, sel=None, columns=None, inc
                 if v_len > player_col_max[col_idx]:
                     player_col_max[col_idx] = v_len
             player_row_num += 1
+            total_written += 1
 
         for col_idx, max_w in enumerate(player_col_max):
             col_letter = get_column_letter(col_idx + 1)
             player_ws.column_dimensions[col_letter].width = min(max_w + 3, 150)
 
         player_ws.auto_filter.ref = f"A1:{get_column_letter(len(player_header))}{player_row_num - 1}"
-
-    summary_ws = wb.create_sheet(title="Summary")
-    summary_ws.sheet_properties.tabColor = "548235"
-    wb.move_sheet(summary_ws, offset=-(sheet_count + (1 if include_players else 0)))
-
-    summary_header_font = Font(name="Calibri", bold=True, color="FFFFFF", size=11)
-    summary_header_fill = PatternFill(start_color="548235", end_color="548235", fill_type="solid")
-    for col_idx, h in enumerate(["Responsible", "Matches", "Players"], 1):
-        cell = summary_ws.cell(row=1, column=col_idx, value=h)
-        cell.font = summary_header_font
-        cell.fill = summary_header_fill
-        cell.alignment = header_alignment
-        cell.border = header_border
-
-    summary_row = 2
-    for user in sorted(matches_by_user.keys()):
-        user_rows = matches_by_user[user]
-        count = len(user_rows)
-        summary_ws.cell(row=summary_row, column=1, value=user).border = thin_border
-        summary_ws.cell(row=summary_row, column=2, value=count).border = thin_border
-        summary_row += 1
-
-    summary_ws.column_dimensions["A"].width = 18
-    summary_ws.column_dimensions["B"].width = 10
-    summary_ws.column_dimensions["C"].width = 12
-    summary_ws.freeze_panes = "A2"
 
     wb.save(output_path)
     return total_written
